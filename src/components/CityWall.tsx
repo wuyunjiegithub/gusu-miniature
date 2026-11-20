@@ -5,10 +5,12 @@ import { CITY_GATES, GATE_HALF_WIDTH } from '../data/cityGates';
 import { useSandTable } from '../store/useSandTable';
 import { buildWallGeometry, splitClosedLine } from '../utils/wall';
 
-/** 城墙：厚 8m、高 9m，沿护城河轮廓内侧环绕；城门处留口 */
+/** 城墙：厚 8m、高 9.7m，沿护城河轮廓内侧环绕；城门处留口 */
 const WALL_THICKNESS = 8;
-const WALL_HEIGHT = 9;
-const WALL_BASE_Y = -1.5;
+/** 墙基压到外围地面（-2m）以下：外侧不会露出悬空的墙脚 */
+const WALL_BASE_Y = -2.2;
+/** 墙高补回墙基下沉的 0.7m，墙顶仍保持 7.5m */
+const WALL_HEIGHT = 9.7;
 const WALL_TOP = WALL_BASE_Y + WALL_HEIGHT;
 const MERLON_SPACING = 6;
 const MERLON_SIZE: [number, number, number] = [2.2, 1.2, 1.0];
@@ -97,3 +99,4 @@ export function CityWall() {
     </group>
   );
 }
+ 

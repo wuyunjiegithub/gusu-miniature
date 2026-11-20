@@ -160,7 +160,7 @@ float facadeGlow = 0.0;
       }
 
       // 夜间点灯：约四成窗户亮暖光
-      facadeGlow = winOn * step(cellSeed, 0.4) * detailFade;
+      facadeGlow = winOn * step(cellSeed, 0.55) * detailFade;
 
       // 窗光色温：每户偏暖程度不同，少数改用冷白灯；亮度也有差异
       float tintSeed = fract(vFacadeSeed * 17.31 + cellSeed * 5.73);
@@ -209,12 +209,14 @@ const ROOF_FRAGMENT_BODY = /* glsl */ `
   // 瓦垄周期只有 0.38m：当一像素覆盖接近一个瓦垄时淡出，消除远景摩尔纹与闪烁
   float stripeAA = 1.0 - smoothstep(0.35, 0.9, fwidth(stripeCoord));
   float tileMask = tileFade * stripeAA;
-  if (tileMask > 0.001 && vRoofNormal.y > 0.2) {
+  // 坡顶几何是双面渲染的，法线朝下的一侧靠 gl_FrontFacing 翻面参与光照，
+  // 这里判"是否朝上的瓦面"必须取绝对值，否则两个坡面永远命中不了
+  if (tileMask > 0.001 && abs(vRoofNormal.y) > 0.2) {
     diffuseColor.rgb *= 1.0 - smoothstep(0.55, 1.0, stripe) * 0.16 * tileMask;
   }
   // 积雪：朝上的瓦面覆雪，保留瓦垄凹槽，避免整片纯白
-  if (uFrost > 0.5 && vRoofNormal.y > 0.04) {
-    float cover = smoothstep(0.04, 0.32, vRoofNormal.y);
+  if (uFrost > 0.5 && abs(vRoofNormal.y) > 0.04) {
+    float cover = smoothstep(0.04, 0.32, abs(vRoofNormal.y));
     float groove = smoothstep(0.5, 1.0, stripe) * 0.24 * stripeAA;
     vec3 frostColor = mix(vec3(0.93, 0.95, 0.98), diffuseColor.rgb, groove);
     // 每栋屋面的积雪厚度略有差异
@@ -324,7 +326,7 @@ export function BuildingField() {
         .replace('#include <color_fragment>', `#include <color_fragment>\n${FACADE_FRAGMENT_BODY}`)
         .replace(
           '#include <emissivemap_fragment>',
-          `#include <emissivemap_fragment>\n  totalEmissiveRadiance += facadeGlowTint * facadeGlow * uNight * 1.8;`,
+          `#include <emissivemap_fragment>\n  totalEmissiveRadiance += facadeGlowTint * facadeGlow * uNight * 2.4;`,
         );
     };
     return mat;

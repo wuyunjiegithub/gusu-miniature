@@ -123,7 +123,23 @@ export const LANDMARKS: Landmark[] = [
     type: 'temple',
     priority: 'P2',
     worldHeritage: false,
-    description: '位于阊门外，是否纳入取决于主城范围是否扩展到枫桥。',
+    description: '阊门外的千年古刹，沙盘西界的锚点；枫桥与钟声是识别符号。',
+  },
+  {
+    id: 'xiyuansi',
+    name: '西园寺',
+    type: 'temple',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '留园西侧的黄墙古刹，中轴殿宇与西花园放生池是识别重点。',
+  },
+  {
+    id: 'shilu',
+    name: '石路商圈',
+    type: 'district',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '阊门外的现代商业街区，步行街两侧的低层商铺与少量高楼构成城西商业中心。',
   },
 ];
 

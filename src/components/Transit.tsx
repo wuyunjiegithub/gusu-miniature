@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { useTransit } from '../hooks/useTransit';
 import { buildRibbons } from '../utils/ribbon';
 import { roadSurfaceY } from '../data/outerCity';
+import { clipLinesToRadius } from '../utils/clip';
+import { WORLD_LIMIT } from '../constants/geo';
 
 /** 轨道线离地高度：略高于地面与道路，沙盘里一眼可辨 */
 const LINE_Y = 2.1;
@@ -22,7 +24,11 @@ export function Transit() {
     () =>
       (data?.lines ?? []).map((line) => ({
         color: line.color,
-        geometry: buildRibbons(line.segments, LINE_WIDTH, (x, z) => roadSurfaceY(x, z, LINE_Y)),
+        geometry: buildRibbons(
+          clipLinesToRadius(line.segments, WORLD_LIMIT),
+          LINE_WIDTH,
+          (x, z) => roadSurfaceY(x, z, LINE_Y),
+        ),
       })),
     [data],
   );

@@ -80,10 +80,11 @@ export const SEASON_LOOKS: Record<Season, SeasonLook> = {
   },
   winter: {
     label: '冬',
-    ground: '#dfe6ea',
-    land: '#e4ebf0',
-    water: '#bfd3dd',
-    lawn: '#e2e9ee',
+    // 雪只落在屋顶与树梢：街巷石板保持干净，路面也不铺雪
+    ground: '#9ba1a6',
+    land: '#a8aeb3',
+    water: '#cfe2ec',
+    lawn: '#9fa795',
     hillLow: '#9aa5a8',
     hillHigh: '#e9eef2',
     crowns: ['#3f5340', '#4a5f49'],

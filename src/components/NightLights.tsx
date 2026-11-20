@@ -10,16 +10,16 @@ import { pointInRing } from '../utils/geo';
 import type { LocalPoint2 } from '../types';
 
 /** 路灯间距（米） */
-const LAMP_SPACING = 70;
-const MAX_LAMPS = 4200;
-const MAX_LANTERNS = 3600;
+const LAMP_SPACING = 58;
+const MAX_LAMPS = 5200;
+const MAX_LANTERNS = 5200;
 
 const LAMP_HEIGHT = 6.2;
 const LANTERN_Y = 5.4;
 /** 灯笼挂在檐下，距离屋檐 0.95m */
 const LANTERN_DROP = 0.95;
-/** 沿街民居挂灯笼的比例 */
-const LANTERN_RATIO = 0.055;
+/** 沿街民居挂灯笼的比例：主城喜庆，密度比"零星点缀"高一档 */
+const LANTERN_RATIO = 0.085;
 
 interface Spot {
   x: number;
@@ -87,8 +87,10 @@ function makeGlowGeometry(spots: Spot[], y: number): THREE.BufferGeometry {
 /** 城内河道 / 护城河水面高度（略高于水面，避免深度冲突） */
 const CANAL_REFLECT_Y = 2.43;
 const MOAT_REFLECT_Y = 1.43;
+/** 山塘河水面（与 WaterSystem 的 SHANTANG_Y 一致） */
+const SHANTANG_REFLECT_Y = -1.27;
 /** 灯影贴片数量上限（单个几何体、一次 draw call） */
-const REFLECT_LIMIT = 720;
+const REFLECT_LIMIT = 1100;
 
 const hash = (v: number): number => {
   const t = Math.sin(v * 12.9898 + 78.233) * 43758.5453;
@@ -164,8 +166,7 @@ function buildReflectionGeometry(): THREE.BufferGeometry {
   }
 
   // 环城河：沿城墙轮廓外侧铺开，灯影更宽、更疏
-  const ring: LocalPoint2[] = sceneGeometry.cityOutline;
-  let carry = 20;
+  const ring: LocalPoint2[] = sceneGeometry.cityOutline;  let carry = 20;
   for (let i = 0; i < ring.length && positions.length / 18 < REFLECT_LIMIT; i += 1) {
     const a = ring[i];
     const b = ring[(i + 1) % ring.length];
@@ -193,6 +194,32 @@ function buildReflectionGeometry(): THREE.BufferGeometry {
       t += 64;
     }
     carry = t - len;
+  }
+
+  // 山塘河：城外的水街同样要点灯，光斑贴着水面拉长
+  for (const line of sceneGeometry.outerWaterways ?? []) {
+    let carry = 6;
+    for (let i = 0; i < line.length - 1 && positions.length / 18 < REFLECT_LIMIT; i += 1) {
+      const [x0, z0] = line[i];
+      const [x1, z1] = line[i + 1];
+      const sx = x1 - x0;
+      const sz = z1 - z0;
+      const len = Math.hypot(sx, sz);
+      if (len < 1) continue;
+      const tx = sx / len;
+      const tz = sz / len;
+      let t = carry;
+      while (t <= len && positions.length / 18 < REFLECT_LIMIT) {
+        const f = t / len;
+        const px = x0 + sx * f;
+        const pz = z0 + sz * f;
+        const h = hash(px * 0.017 + pz * 0.023);
+        const off = (h - 0.5) * 4;
+        push(px - tz * off, pz + tx * off, tx, tz, 9 + h * 10, 2.2 + h * 1.4, SHANTANG_REFLECT_Y);
+        t += 30;
+      }
+      carry = t - len;
+    }
   }
 
   const geo = new THREE.BufferGeometry();
@@ -390,6 +417,37 @@ export function NightLights() {
       }
     }
 
+    // 观前街 / 平江路：沿街挑出一串红灯笼，主城夜景的"喜庆"主要靠这两条街
+    for (const id of ['guanqianjie', 'pingjiang'] as const) {
+      const path = sceneGeometry.landmarks[id]?.path;
+      if (!path) continue;
+      let carry = 0;
+      for (let i = 0; i < path.length - 1 && lanterns.length < MAX_LANTERNS; i += 1) {
+        const [x0, z0] = path[i];
+        const [x1, z1] = path[i + 1];
+        const dx = x1 - x0;
+        const dz = z1 - z0;
+        const len = Math.hypot(dx, dz);
+        if (len < 1) continue;
+        const nx = -dz / len;
+        const nz = dx / len;
+        let t = carry;
+        while (t <= len && lanterns.length < MAX_LANTERNS) {
+          const f = t / len;
+          const wobble = Math.sin((t + i * 7) * 0.09) * 1.6;
+          lanterns.push({
+            x: x0 + dx * f + nx * wobble,
+            z: z0 + dz * f + nz * wobble,
+            nx: 0,
+            nz: 0,
+            y: 6.4,
+          });
+          t += 14;
+        }
+        carry = t - len;
+      }
+    }
+
     return { lamps: innerLamps, lanterns };
   }, [roads, buildings]);
 
@@ -508,8 +566,8 @@ export function NightLights() {
       <points geometry={glowGeos.lamp} frustumCulled={false}>
         <pointsMaterial
           map={glowTexture}
-          color="#ffcf8f"
-          size={26}
+          color="#ffd49a"
+          size={36}
           sizeAttenuation
           transparent
           depthWrite={false}
@@ -519,8 +577,8 @@ export function NightLights() {
       <points geometry={glowGeos.lantern} frustumCulled={false}>
         <pointsMaterial
           map={glowTexture}
-          color="#ff5a38"
-          size={20}
+          color="#ff6a44"
+          size={26}
           sizeAttenuation
           transparent
           depthWrite={false}
@@ -531,11 +589,11 @@ export function NightLights() {
       <points geometry={glowGeos.lantern} frustumCulled={false}>
         <pointsMaterial
           map={glowTexture}
-          color="#ff7a3a"
-          size={44}
+          color="#ff8a4a"
+          size={58}
           sizeAttenuation
           transparent
-          opacity={0.3}
+          opacity={0.34}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />

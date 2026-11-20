@@ -258,7 +258,30 @@ for (const chain of chainWays(waterWays, 60)) {
   for (const [a, b] of segs) flat.push(a, b); // 保持 {x,z} 对象供 round1 使用
   waterways.push(round1(flat));
 }
+// 盘门水门不再作为城内河道输出：它在城墙外要降到护城河标高，
+// 由 WaterSystem 的 PANMEN_GATE 单独铺水面（避免两层水面叠在一起）。
 console.log(`[水系] 城内线段组 ${waterways.length} 组`);
+
+/* ---------------- 2b. 城外水道：山塘河（阊门—虎丘） ---------------- */
+
+const OUTER_WATER_LIMIT = 5800;
+const outerWaterways = [];
+for (const chain of chainWays(waterWays.filter((w) => (w.tags?.name ?? '').includes('山塘河')), 60)) {
+  if (chain.length < 2) continue;
+  outerWaterways.push(round1(toLocalLine(chain)));
+}
+// 只保留寒山寺界内的部分，避免水面伸出沙盘
+for (let i = outerWaterways.length - 1; i >= 0; i -= 1) {
+ 
+
+  // round1 输出的是 [x, z] 数组
+  const pts = outerWaterways[i].filter(
+    (p) => Math.abs(p[0]) <= OUTER_WATER_LIMIT && Math.abs(p[1]) <= OUTER_WATER_LIMIT,
+  );
+  if (pts.length >= 2) outerWaterways[i] = pts;
+  else outerWaterways.splice(i, 1);
+}
+console.log(`[水系] 城外山塘河 ${outerWaterways.length} 组`);
 
 /* ---------------- 3. 景点轮廓与坐标 ---------------- */
 
@@ -446,6 +469,22 @@ if (taohuawu) {
   }
 }
 
+/* ---------------- 3c. 西园寺 / 石路商圈 ---------------- */
+
+// 西园寺（西园戒幢律寺）：寺院范围 way 736382204
+const xiyuansi = await extra('extra-xiyuansi.json');
+if (xiyuansi) {
+  const site = (xiyuansi.elements ?? []).find((el) => el.id === 736382204);
+  addRingLandmark('xiyuansi', site);
+}
+
+// 石路商圈：以石路步行街 retail 面 way 561176608 作为街区范围
+const shilu = await extra('extra-shilu.json');
+if (shilu) {
+  const site = (shilu.elements ?? []).find((el) => el.id === 561176608);
+  addRingLandmark('shilu', site);
+}
+
 /* ---------------- 4. 输出统一场景数据 ---------------- */
 
 const sceneData = {
@@ -458,6 +497,7 @@ const sceneData = {
   },
   cityOutline: round1(cityOutlineLocal),
   waterways,
+  outerWaterways,
   landmarks,
 };
 

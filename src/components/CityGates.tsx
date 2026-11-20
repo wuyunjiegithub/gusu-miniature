@@ -6,9 +6,9 @@ import { CITY_GATES, type CityGate } from '../data/cityGates';
 import { createHipRoofGeometry } from '../utils/roof';
 import { useSandTable } from '../store/useSandTable';
 
-/** 与 CityWall 对齐：墙基 -1.5、墙高 9（墙顶 7.5） */
-const GATE_BASE_Y = -1.5;
-const BASE_H = 14.5; // 城台从 -1.5 到 13
+/** 与 CityWall 对齐：墙基 -2.2、墙高 9.7（墙顶 7.5） */
+const GATE_BASE_Y = -2.2;
+const BASE_H = 15.2; // 城台从 -2.2 到 13
 
 /** 城门楼材质取色（冬季覆薄霜整体转冷） */
 function palette(winter: boolean) {

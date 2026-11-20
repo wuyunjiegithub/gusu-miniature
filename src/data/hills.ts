@@ -10,11 +10,9 @@ export interface HillSpec {
   color: string;
 }
 
+// 沙盘以寒山寺为西界（约 5.8km），只保留这个范围内的近山；
+// 灵岩山、七子山、阳山、上方山都在 6km 以外，已移除。
 export const HILLS: HillSpec[] = [
   { name: '虎丘', lon: 120.5725, lat: 31.3378, radius: 420, height: 88, color: '#4f6249' },
   { name: '狮子山', lon: 120.567, lat: 31.305, radius: 700, height: 188, color: '#4a5c47' },
-  { name: '上方山', lon: 120.585, lat: 31.266, radius: 800, height: 163, color: '#465845' },
-  { name: '灵岩山', lon: 120.547, lat: 31.28, radius: 900, height: 250, color: '#415242' },
-  { name: '七子山', lon: 120.563, lat: 31.243, radius: 950, height: 150, color: '#445643' },
-  { name: '阳山', lon: 120.53, lat: 31.372, radius: 1150, height: 180, color: '#4b5d48' },
 ];

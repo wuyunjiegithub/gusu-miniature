@@ -3,11 +3,13 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { sceneGeometry } from '../data/sceneGeometry';
+import { WATER_LEVEL } from './WaterSystem';
 
-/** 水面高度（与 WaterSystem 一致） */
-const WATER_Y = 2.4;
-/** 船只总数上限 */
-const BOAT_CAP = 18;
+/** 城内水面高度（与 WaterSystem 一致） */
+const WATER_Y = WATER_LEVEL.canal;
+/** 城内 / 山塘河船只数量上限 */
+const INNER_BOAT_CAP = 22;
+const SHANTANG_BOAT_CAP = 26;
 
 const hash = (v: number): number => {
   const t = Math.sin(v * 12.9898 + 4.1) * 43758.5453;
@@ -69,8 +71,14 @@ function createBoatGeometry(): THREE.BufferGeometry {
     '#6b5237',
   );
 
+  // 船头小灯：夜里的一点暖色，与两岸灯火呼应
+  const lamp = paint(
+    new THREE.BoxGeometry(0.22, 0.3, 0.22).translate(1.9, WATER_Y + 0.62, 0),
+    '#d8a05a',
+  );
+
   // 合并失败时退化为空几何：宁可没船，也不能让整个场景崩溃
-  return mergeGeometries([hull, canopy, deck]) ?? new THREE.BufferGeometry();
+  return mergeGeometries([hull, canopy, deck, lamp]) ?? new THREE.BufferGeometry();
 }
 
 interface BoatSpot {
@@ -78,21 +86,23 @@ interface BoatSpot {
   z: number;
   /** 船头朝向（局部 +X 对齐河道切向） */
   rot: number;
+  /** 实例的 y 偏移：船体几何已按城内水面烘焙，别的河段需要整体下移 */
+  y: number;
 }
 
 /** 沿河道取点停船：避开河心，靠一侧岸边 */
-function pickBoatSpots(): BoatSpot[] {
+function pickInnerSpots(): BoatSpot[] {
   const spots: BoatSpot[] = [];
   let seed = 3;
 
   for (const line of sceneGeometry.waterways) {
-    for (let i = 0; i < line.length - 1 && spots.length < BOAT_CAP; i += 1) {
+    for (let i = 0; i < line.length - 1 && spots.length < INNER_BOAT_CAP; i += 1) {
       const [x1, z1] = line[i];
       const [x2, z2] = line[i + 1];
       const len = Math.hypot(x2 - x1, z2 - z1);
       if (len < 60) continue;
 
-      for (let d = 45; d < len - 35 && spots.length < BOAT_CAP; d += 140) {
+      for (let d = 45; d < len - 35 && spots.length < INNER_BOAT_CAP; d += 140) {
         seed += 1;
         if (hash(seed) > 0.45) continue;
 
@@ -105,16 +115,70 @@ function pickBoatSpots(): BoatSpot[] {
           x: x1 + (x2 - x1) * t - tz * offset,
           z: z1 + (z2 - z1) * t + tx * offset,
           rot: Math.atan2(-tz, tx),
+          y: 0,
         });
       }
     }
-    if (spots.length >= BOAT_CAP) break;
+    if (spots.length >= INNER_BOAT_CAP) break;
   }
   return spots;
 }
 
 /**
- * 河道生机（M1 补充）：城内运河与环城河里停靠的乌篷船，
+ * 山塘河游船：沿山塘河均匀取样，靠一侧缓行停泊；
+ * 石拱桥、河埠头附近各留一条，让"七里山塘"这段水街有生活气。
+ */
+function pickShantangSpots(): BoatSpot[] {
+  const line = sceneGeometry.outerWaterways?.[0];
+  if (!line || line.length < 2) return [];
+
+  // 累计里程，按固定间距取点
+  const cum: number[] = [0];
+  for (let i = 0; i < line.length - 1; i += 1) {
+    cum.push(cum[i] + Math.hypot(line[i + 1][0] - line[i][0], line[i + 1][1] - line[i][1]));
+  }
+  const total = cum[cum.length - 1];
+  const spots: BoatSpot[] = [];
+  let seed = 91;
+
+  const at = (s: number): { x: number; z: number; tx: number; tz: number } => {
+    const dist = Math.min(Math.max(s, 0), total - 0.001);
+    let i = 0;
+    while (i < cum.length - 2 && cum[i + 1] < dist) i += 1;
+    const segLen = cum[i + 1] - cum[i] || 1;
+    const f = (dist - cum[i]) / segLen;
+    const [x1, z1] = line[i];
+    const [x2, z2] = line[i + 1];
+    const len = Math.hypot(x2 - x1, z2 - z1) || 1;
+    return {
+      x: x1 + (x2 - x1) * f,
+      z: z1 + (z2 - z1) * f,
+      tx: (x2 - x1) / len,
+      tz: (z2 - z1) / len,
+    };
+  };
+
+  const spacing = total / (SHANTANG_BOAT_CAP + 1);
+  for (let k = 0; k < SHANTANG_BOAT_CAP; k += 1) {
+    seed += 1;
+    const s = spacing * (k + 0.5) + (hash(seed) - 0.5) * spacing * 0.35;
+    const p = at(s);
+    const side = hash(seed + 5) > 0.5 ? 1 : -1;
+    const offset = side * (3.2 + hash(seed + 7) * 1.6);
+    // 局部 +X 对齐河道切向：船头朝向 + 轻微摆动
+    const rot = Math.atan2(-p.tz, p.tx);
+    spots.push({
+      x: p.x - p.tz * offset,
+      z: p.z + p.tx * offset,
+      rot,
+      y: WATER_LEVEL.shantang - WATER_Y,
+    });
+  }
+  return spots;
+}
+
+/**
+ * 河道生机（M1 补充）：城内运河与山塘河里停靠的乌篷船，
  * 位置沿真实河网取样、靠岸偏置，轻微上下浮动。
  */
 export function CanalBoats() {
@@ -124,7 +188,7 @@ export function CanalBoats() {
     () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, flatShading: true }),
     [],
   );
-  const spots = useMemo(pickBoatSpots, []);
+  const spots = useMemo(() => [...pickInnerSpots(), ...pickShantangSpots()], []);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const count = Math.max(1, spots.length);
 
@@ -132,7 +196,7 @@ export function CanalBoats() {
     const mesh = meshRef.current;
     if (!mesh) return;
     spots.forEach((spot, i) => {
-      dummy.position.set(spot.x, WATER_Y, spot.z);
+      dummy.position.set(spot.x, spot.y, spot.z);
       dummy.rotation.set(0, spot.rot, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
@@ -146,7 +210,7 @@ export function CanalBoats() {
     if (!mesh) return;
     const t = clock.elapsedTime;
     spots.forEach((spot, i) => {
-      dummy.position.set(spot.x, Math.sin(t * 0.8 + i * 1.7) * 0.02, spot.z);
+      dummy.position.set(spot.x, spot.y + Math.sin(t * 0.8 + i * 1.7) * 0.02, spot.z);
       dummy.rotation.set(Math.sin(t * 0.6 + i) * 0.012, spot.rot, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();

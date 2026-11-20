@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useLayoutEffect } from 'react';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSandTable } from '../store/useSandTable';
@@ -22,6 +22,10 @@ interface LightPreset {
   fillIntensity: number;
 }
 
+/**
+ * 夜晚统一走"灯火通明"的基调：环境光与半球光抬到接近黄昏，
+ * 城市轮廓、屋顶关系仍然可读，再由路灯、窗光与红灯笼提供层次。
+ */
 const LOOK: Record<Season, { day: LightPreset; night: LightPreset }> = {
   spring: {
     day: {
@@ -40,19 +44,19 @@ const LOOK: Record<Season, { day: LightPreset; night: LightPreset }> = {
       fillIntensity: 0.24,
     },
     night: {
-      bg: '#0e1726',
-      fogNear: 5200,
-      fogFar: 15000,
-      ambient: 0.4,
-      ambientColor: '#93a9c9',
-      hemi: 0.62,
-      hemiSky: '#2a3c57',
-      hemiGround: '#4a3324',
-      sunColor: '#9fb8dc',
-      sunIntensity: 0.48,
+      bg: '#101a29',
+      fogNear: 5600,
+      fogFar: 15500,
+      ambient: 0.62,
+      ambientColor: '#a9b8cd',
+      hemi: 0.95,
+      hemiSky: '#33496b',
+      hemiGround: '#6a4526',
+      sunColor: '#a8bee0',
+      sunIntensity: 0.6,
       sunPosition: [-1400, 1900, -900],
-      fillColor: '#6d88b0',
-      fillIntensity: 0.35,
+      fillColor: '#7f9ac0',
+      fillIntensity: 0.42,
     },
   },
   summer: {
@@ -72,19 +76,19 @@ const LOOK: Record<Season, { day: LightPreset; night: LightPreset }> = {
       fillIntensity: 0.24,
     },
     night: {
-      bg: '#0c1524',
-      fogNear: 5000,
-      fogFar: 14800,
-      ambient: 0.38,
-      ambientColor: '#93a9c9',
-      hemi: 0.6,
-      hemiSky: '#283a55',
-      hemiGround: '#48331f',
-      sunColor: '#9fb8dc',
-      sunIntensity: 0.46,
+      bg: '#0e1826',
+      fogNear: 5400,
+      fogFar: 15200,
+      ambient: 0.6,
+      ambientColor: '#a9b8cd',
+      hemi: 0.92,
+      hemiSky: '#314768',
+      hemiGround: '#684323',
+      sunColor: '#a8bee0',
+      sunIntensity: 0.58,
       sunPosition: [-1400, 1900, -900],
-      fillColor: '#6d88b0',
-      fillIntensity: 0.34,
+      fillColor: '#7f9ac0',
+      fillIntensity: 0.4,
     },
   },
   autumn: {
@@ -105,19 +109,19 @@ const LOOK: Record<Season, { day: LightPreset; night: LightPreset }> = {
       fillIntensity: 0.22,
     },
     night: {
-      bg: '#121722',
-      fogNear: 4600,
-      fogFar: 14000,
-      ambient: 0.42,
-      ambientColor: '#9aa9c0',
-      hemi: 0.58,
-      hemiSky: '#2c3745',
-      hemiGround: '#4d3a26',
-      sunColor: '#b7c4d8',
-      sunIntensity: 0.46,
+      bg: '#131926',
+      fogNear: 5000,
+      fogFar: 14500,
+      ambient: 0.62,
+      ambientColor: '#aeb6c6',
+      hemi: 0.94,
+      hemiSky: '#37445c',
+      hemiGround: '#6d4a26',
+      sunColor: '#bcc9dd',
+      sunIntensity: 0.58,
       sunPosition: [-1400, 1800, -950],
-      fillColor: '#738097',
-      fillIntensity: 0.32,
+      fillColor: '#8491a8',
+      fillIntensity: 0.4,
     },
   },
   winter: {
@@ -138,46 +142,35 @@ const LOOK: Record<Season, { day: LightPreset; night: LightPreset }> = {
       fillIntensity: 0.32,
     },
     night: {
-      bg: '#16202c',
-      fogNear: 4200,
-      fogFar: 13000,
-      ambient: 0.46,
-      ambientColor: '#a8bdd6',
-      hemi: 0.62,
-      hemiSky: '#28394f',
-      hemiGround: '#4a5558',
-      sunColor: '#a9c0d8',
-      sunIntensity: 0.5,
+      bg: '#17222f',
+      fogNear: 4600,
+      fogFar: 13800,
+      ambient: 0.66,
+      ambientColor: '#b4c6da',
+      hemi: 0.98,
+      hemiSky: '#31455f',
+      hemiGround: '#5c5a52',
+      sunColor: '#b4c8de',
+      sunIntensity: 0.6,
       sunPosition: [-1500, 1750, -900],
-      fillColor: '#6f8aa8',
-      fillIntensity: 0.36,
+      fillColor: '#8399b4',
+      fillIntensity: 0.44,
     },
   },
 };
 
 /**
- * 环境系统：昼夜 × 四季 驱动天空色、雾、日照方位与强度，
- * 以及天空中的太阳 / 月亮。四季通过"光的角度与色温 + 雾的浓度"拉开时令感。
+ * 环境系统：昼夜 × 四季 驱动天空色、雾、日照方位与强度。
+ * 四季通过"光的角度与色温 + 雾的浓度"拉开时令感。
+ * 天空不再画日月实体：沙盘是俯视的模型台，天体只会喧宾夺主。
  */
-
-/** 日/月距离：落在远裁面内，避开雾（材质 fog=false） */
-const SKY_DISTANCE = 9000;
-
 export function EnvironmentRig() {
-  const { scene } = useThree();
-  const sunRef = useRef<THREE.DirectionalLight>(null);
+  const { scene, gl } = useThree();
   const time = useSandTable((state) => state.time);
   const season = useSandTable((state) => state.season);
 
   const night = time === 'night';
   const preset = LOOK[season][night ? 'night' : 'day'];
-
-  /** 太阳 / 月亮沿用日照方位，但压低到 22° 仰角，保证在全景视角里也能看到 */
-  const skyPosition = useMemo(() => {
-    const dir = new THREE.Vector3(...preset.sunPosition);
-    dir.y = Math.hypot(dir.x, dir.z) * Math.tan(THREE.MathUtils.degToRad(22));
-    return dir.normalize().multiplyScalar(SKY_DISTANCE);
-  }, [preset]);
 
   useLayoutEffect(() => {
     scene.background = new THREE.Color(preset.bg);
@@ -187,33 +180,17 @@ export function EnvironmentRig() {
     };
   }, [scene, preset]);
 
-  // 阴影参数用命令式配置，确保正交阴影相机在属性写入后更新投影矩阵
+  // 夜景整体提亮一档曝光：灯火通明的主城不能靠压暗周围来显亮
   useLayoutEffect(() => {
-    const light = sunRef.current;
-    if (!light) return;
-    light.castShadow = true;
-    light.shadow.mapSize.set(2048, 2048);
-    light.shadow.bias = -0.0006;
-    light.shadow.normalBias = 0.6;
-    const cam = light.shadow.camera as THREE.OrthographicCamera;
-    cam.left = -3200;
-    cam.right = 3200;
-    cam.top = 3200;
-    cam.bottom = -3200;
-    cam.near = 100;
-    cam.far = 9000;
-    cam.updateProjectionMatrix();
-  }, [preset.sunPosition]);
+    gl.toneMappingExposure = night ? 1.28 : 1.1;
+  }, [gl, night]);
 
   return (
     <group>
-      {/* 夜间保留基础环境光，避免古城变成一片死黑 */}
+      {/* 夜间保留较高的环境光，避免古城变成一片死黑 */}
       <ambientLight intensity={preset.ambient} color={preset.ambientColor} />
-      <hemisphereLight
-        args={[preset.hemiSky, preset.hemiGround, preset.hemi]}
-      />
+      <hemisphereLight args={[preset.hemiSky, preset.hemiGround, preset.hemi]} />
       <directionalLight
-        ref={sunRef}
         position={preset.sunPosition}
         intensity={preset.sunIntensity}
         color={preset.sunColor}
@@ -223,49 +200,9 @@ export function EnvironmentRig() {
         intensity={preset.fillIntensity}
         color={preset.fillColor}
       />
-      {/* 城市灯火的低角度暖色反光 */}
-      {night && <directionalLight position={[900, 320, 700]} intensity={0.3} color="#ff9a5c" />}
-
-      {/* 日 / 月：关闭雾与色调映射，保证在天空底色上清晰 */}
-      {night ? (
-        <group position={skyPosition}>
-          <mesh>
-            <sphereGeometry args={[210, 24, 16]} />
-            <meshBasicMaterial color="#eef3fa" fog={false} toneMapped={false} />
-          </mesh>
-          <mesh>
-            <sphereGeometry args={[440, 24, 16]} />
-            <meshBasicMaterial
-              color="#9db6d8"
-              transparent
-              opacity={0.16}
-              fog={false}
-              depthWrite={false}
-              toneMapped={false}
-              blending={THREE.AdditiveBlending}
-            />
-          </mesh>
-        </group>
-      ) : (
-        <group position={skyPosition}>
-          <mesh>
-            <sphereGeometry args={[260, 24, 16]} />
-            <meshBasicMaterial color="#fff6d6" fog={false} toneMapped={false} />
-          </mesh>
-          <mesh>
-            <sphereGeometry args={[520, 24, 16]} />
-            <meshBasicMaterial
-              color="#ffd98b"
-              transparent
-              opacity={0.2}
-              fog={false}
-              depthWrite={false}
-              toneMapped={false}
-              blending={THREE.AdditiveBlending}
-            />
-          </mesh>
-        </group>
-      )}
+      {/* 城市灯火的低角度暖色反光：把主城的白墙黛瓦染上一层暖调 */}
+      {night && <directionalLight position={[900, 320, 700]} intensity={0.62} color="#ffa063" />}
+      {night && <directionalLight position={[-700, 260, -600]} intensity={0.3} color="#ff7a4a" />}
     </group>
   );
 }

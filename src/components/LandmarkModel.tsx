@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { sceneGeometry } from '../data/sceneGeometry';
 import { useSandTable } from '../store/useSandTable';
 import { SEASON_LOOKS, type Season } from '../constants/seasons';
+import { getSkyReflection } from '../utils/skyEnv';
 
 /** 精细 GLB 默认落在景点底座顶面；与 Landmarks 的 PAD_OVERRIDE 1.6 保持一致 */
 export const LANDMARK_BASE_Y = 1.6;
@@ -167,6 +168,8 @@ interface LandmarkModelProps {
   url: string;
   /** 模型原点高度；自带地形底板的模型需略高于底座顶面 */
   baseY?: number;
+  /** 城外地标：夜里不点灯笼，城外民居只留窗光 */
+  outside?: boolean;
 }
 
 /**
@@ -174,7 +177,7 @@ interface LandmarkModelProps {
  * 单位为米、原点为景点质心，可直接按质心坐标落入沙盘。
  * 材质按名称做四季换色、瓦面程序化瓦垄，选中时整体自发光高亮。
  */
-export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y }: LandmarkModelProps) {
+export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y, outside }: LandmarkModelProps) {
   const { scene } = useGLTF(url);
   const selectedId = useSandTable((state) => state.selectedId);
   const select = useSandTable((state) => state.select);
@@ -184,6 +187,7 @@ export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y }: LandmarkMode
   const model = useMemo(() => scene.clone(true), [scene]);
   const centroid = sceneGeometry.landmarks[id]?.centroid;
   const selected = selectedId === id;
+  const skyReflection = useMemo(() => getSkyReflection(season), [season]);
 
   useLayoutEffect(() => {
     const materials = new Set<THREE.Material>();
@@ -215,6 +219,14 @@ export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y }: LandmarkMode
       } else if (kind === 'ground') {
         // 与城内街巷铺装同一套青石板色
         mat.color.set(SEASON_LOOKS[season].ground);
+      } else if (kind === 'water') {
+        // 园林水面：低粗糙度 + 天空反射，俯视时能读到"水"，而不是一块蓝灰色地砖
+        mat.color.set(season === 'winter' ? '#cfe2ec' : tint.water);
+        mat.roughness = season === 'winter' ? 0.06 : 0.14;
+        mat.metalness = season === 'winter' ? 0.3 : 0.18;
+        mat.envMap = skyReflection;
+        mat.envMapIntensity = season === 'winter' ? 1.5 : 0.6;
+        mat.needsUpdate = true;
       } else if (kind !== 'other') {
         mat.color.set(tint[kind]);
       }
@@ -222,15 +234,16 @@ export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y }: LandmarkMode
       if (kind === 'tile') applyTileShader(mat);
       if (kind === 'wall') applyWallShader(mat);
 
-      // 选中高亮优先；夜间灯笼自发光
-      const glow = selected ? '#ffb84d' : night && kind === 'lantern' ? '#ff8a3c' : '#000000';
+      // 选中高亮优先；夜间灯笼自发光（城外地标不点灯笼）
+      const lanternLit = night && kind === 'lantern' && !outside;
+      const glow = selected ? '#ffb84d' : lanternLit ? '#ff8a3c' : '#000000';
       mat.emissive.set(glow);
       // 选中高亮压到很低：强叠加会把白墙黛瓦整片染成米黄，看起来像"另一种风格"
-      mat.emissiveIntensity = selected ? 0.12 : night && kind === 'lantern' ? 0.8 : 0;
+      mat.emissiveIntensity = selected ? 0.12 : lanternLit ? 1.1 : 0;
     }
 
     for (const uniform of nightUniforms) uniform.value = night ? 1 : 0;
-  }, [model, selected, season, night]);
+  }, [model, selected, season, night, outside, skyReflection]);
 
   if (!centroid) return null;
 
@@ -264,3 +277,5 @@ useGLTF.preload('/models/hanshansi.glb');
 useGLTF.preload('/models/tangyinci.glb');
 useGLTF.preload('/models/taohuawu.glb');
 useGLTF.preload('/models/shantangjie.glb');
+useGLTF.preload('/models/xiyuansi.glb');
+useGLTF.preload('/models/shilu.glb');

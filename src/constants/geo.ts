@@ -17,6 +17,15 @@ export const CITY_BOUNDS = {
 /** 底座厚度（米），呈现实体沙盘台观感 */
 export const BASE_THICKNESS = 24;
 
+/**
+ * 世界范围（米）：西至寒山寺（约 5.45km）为界，取 5.8km。
+ * 地面、道路、建筑与远山一律裁在此半径内，不再向天际线无限蔓延。
+ */
+export const WORLD_LIMIT = 5800;
+
+/** 外围地面圆盘半径：略大于 WORLD_LIMIT，正好兜住虎丘/狮子山的山脚 */
+export const GROUND_DISC_RADIUS = 5900;
+
 /** LOD 距离阈值（米），见需求文档 FR-11 */
 export const LOD_THRESHOLDS = {
   /** 相机距离 > 该值 → L0 全景 */

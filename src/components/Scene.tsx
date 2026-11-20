@@ -9,6 +9,7 @@ import { WaterSystem } from './WaterSystem';
 import { Outskirts } from './Outskirts';
 import { EnvironmentRig } from './EnvironmentRig';
 import { Roads } from './Roads';
+import { RoadMarkings } from './RoadMarkings';
 import { Transit } from './Transit';
 import { CanalBridges } from './CanalBridges';
 import { CanalEmbankment } from './CanalEmbankment';
@@ -20,7 +21,7 @@ import { BuildingField } from './BuildingField';
 import { NightLights } from './NightLights';
 import { Landmarks } from './Landmarks';
 import { LandmarkLabels } from './LandmarkLabels';
-import { CameraRig, PanBounds } from './CameraRig';
+import { CameraRig, DebugCamera, PanBounds } from './CameraRig';
 import { LodWatcher } from './LodWatcher';
 import { PerfProbe } from './PerfProbe';
 
@@ -56,6 +57,7 @@ export function Scene() {
       <Hills />
       <WaterSystem />
       <Roads />
+      <RoadMarkings />
       <Transit />
       <CanalBridges />
       <CanalEmbankment />
@@ -69,6 +71,7 @@ export function Scene() {
       <LandmarkLabels />
 
       <CameraRig />
+      <DebugCamera />
       <PanBounds />
       <LodWatcher />
       <PerfProbe />

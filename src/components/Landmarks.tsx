@@ -12,27 +12,14 @@ import type { LocalPoint2 } from '../types';
 const LANDMARK_HEIGHT = 14;
 /** 园林类只做低矮铺装，避免遮住绿地与树木 */
 const GARDEN_PAD_HEIGHT = 2.2;
-/** 已替换为精细 GLB 的景点：底座压成薄石台（顶面 1.6m，高于 1.2m 的道路面，避免共面闪烁） */
-const PAD_OVERRIDE: Record<string, number> = {
-  panmen: 1.6,
-  zhuozhengyuan: 1.6,
-  liuyuan: 1.6,
-  shuangta: 1.6,
-  beisita: 1.6,
-  shizilin: 1.6,
-  wangshiyuan: 1.6,
-  'suzhou-museum': 1.6,
-  canglangting: 1.6,
-  hanshansi: 1.6,
-  tangyinci: 1.6,
-  shantangjie: 1.6,
-};
+/** 城内精细模型的石台顶面（略低于模型原点，露出薄薄一圈台边） */
+const CITY_PAD_TOP = 1.6;
 
 /** 已完成精细建模的景点（阶段3 逐步扩充）；自带地形的模型再抬高 0.25m 露出底座边沿 */
-const DETAILED_MODELS: Array<{ id: string; url: string; baseY?: number }> = [
-  { id: 'panmen', url: '/models/panmen.glb', baseY: 1.6 },
+const DETAILED_MODELS: Array<{ id: string; url: string; baseY?: number; outside?: boolean }> = [
+  { id: 'panmen', url: '/models/panmen.glb', baseY: 1.6, outside: true },
   { id: 'zhuozhengyuan', url: '/models/zhuozhengyuan.glb', baseY: 1.85 },
-  { id: 'liuyuan', url: '/models/liuyuan.glb', baseY: 1.85 },
+  { id: 'liuyuan', url: '/models/liuyuan.glb', baseY: 1.85, outside: true },
   // 街道样板段贴地：街面 ≈ 1.3m，与周边道路（1.2/1.3m）齐平
   { id: 'pingjiang', url: '/models/pingjiang.glb', baseY: 1.25 },
   { id: 'guanqianjie', url: '/models/guanqianjie.glb', baseY: 1.25 },
@@ -42,23 +29,41 @@ const DETAILED_MODELS: Array<{ id: string; url: string; baseY?: number }> = [
   { id: 'wangshiyuan', url: '/models/wangshiyuan.glb', baseY: 1.85 },
   { id: 'suzhou-museum', url: '/models/suzhou_museum.glb', baseY: 1.85 },
   { id: 'canglangting', url: '/models/canglangting.glb', baseY: 1.85 },
-  { id: 'hanshansi', url: '/models/hanshansi.glb', baseY: 1.85 },
+  { id: 'hanshansi', url: '/models/hanshansi.glb', baseY: 1.85, outside: true },
   { id: 'tangyinci', url: '/models/tangyinci.glb', baseY: 1.85 },
   { id: 'taohuawu', url: '/models/taohuawu.glb', baseY: 1.25 },
-  { id: 'shantangjie', url: '/models/shantangjie.glb', baseY: 1.85 },
+  // 山塘街在阊门外：整段落在城外基准面上，街面比城外地面高约 1.2m（沿河堤岸）
+  { id: 'shantangjie', url: '/models/shantangjie.glb', baseY: -0.75, outside: true },
+  { id: 'xiyuansi', url: '/models/xiyuansi.glb', baseY: 1.85, outside: true },
+  { id: 'shilu', url: '/models/shilu.glb', baseY: 1.85, outside: true },
 ];
 
 const DETAILED_IDS = new Set(DETAILED_MODELS.map((model) => model.id));
 
-/** 城外地标没有底座沙盘承托，石台需下沉到外围地面（-2m），避免悬空 */
-const PAD_SINK: Record<string, number> = { liuyuan: 2, hanshansi: 2 };
+/**
+ * 城外地标没有城内沙盘台承托，石台要一直落到外围地面（-2m）；
+ * 山塘街低到河面以下，否则会把模型自带的山塘河埋在台子里。
+ */
+const PAD_TOP: Record<string, number> = {
+  // 山塘街石台压到河面（-1.3m）以下，模型内河与山塘河才能连成一条水
+  shantangjie: -1.34,
+};
+
+const OUTSIDE_IDS = new Set(DETAILED_MODELS.filter((model) => model.outside).map((model) => model.id));
+
+/** 城外地面高度（与 WaterSystem 的 GROUND_Y 一致） */
+const OUTER_GROUND_Y = -2;
 
 /** 轮廓环 → 拉伸几何（Shape 点取 (x,-z)，rotateX 后顶面朝上） */
-function outlineToGeometry(outline: LocalPoint2[], depth: number, sink = 0): THREE.ExtrudeGeometry {
+function outlineToGeometry(
+  outline: LocalPoint2[],
+  top: number,
+  bottom: number,
+): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape(outline.map(([x, z]) => new THREE.Vector2(x, -z)));
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: depth + sink, bevelEnabled: false });
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: top - bottom, bevelEnabled: false });
   geo.rotateX(-Math.PI / 2);
-  if (sink) geo.translate(0, -sink, 0);
+  geo.translate(0, bottom, 0);
   return geo;
 }
 
@@ -77,21 +82,19 @@ export function Landmarks() {
     const map = new Map<string, THREE.ExtrudeGeometry>();
     for (const landmark of LANDMARKS) {
       const geo = sceneGeometry.landmarks[landmark.id];
-      if (geo?.outline) {
-        // 已有精细 GLB 的景点一律压成薄石台，避免 14m 高的占位体块
-        // 把模型整个扣在里面（山塘街曾因此完全看不到模型）
-        const depth =
-          PAD_OVERRIDE[landmark.id] ??
-          (DETAILED_IDS.has(landmark.id)
-            ? 1.6
-            : landmark.type === 'garden'
-              ? GARDEN_PAD_HEIGHT
-              : LANDMARK_HEIGHT);
-        map.set(
-          landmark.id,
-          outlineToGeometry(geo.outline, depth, PAD_SINK[landmark.id] ?? 0),
-        );
-      }
+      if (!geo?.outline) continue;
+      // 已有精细 GLB 的景点一律压成薄石台，避免 14m 高的占位体块
+      // 把模型整个扣在里面（山塘街曾因此完全看不到模型）
+      const top =
+        PAD_TOP[landmark.id] ??
+        (DETAILED_IDS.has(landmark.id)
+          ? CITY_PAD_TOP
+          : landmark.type === 'garden'
+            ? GARDEN_PAD_HEIGHT
+            : LANDMARK_HEIGHT);
+      // 城外与盘门（跨护城河）的石台落到外围地面，避免露出悬空的台底
+      const bottom = OUTSIDE_IDS.has(landmark.id) ? OUTER_GROUND_Y : 0;
+      map.set(landmark.id, outlineToGeometry(geo.outline, top, bottom));
     }
     return map;
   }, []);
@@ -103,8 +106,13 @@ export function Landmarks() {
         if (!geo) return null;
         const selected = selectedId === landmark.id;
         const color = LANDMARK_TYPE_COLORS[landmark.type];
-        // 精细模型的石台用城内青石板色，保持与街巷铺装一致（否则是大片米色平台）
-        const padColor = DETAILED_IDS.has(landmark.id) ? SEASON_LOOKS[season].ground : color;
+        // 精细模型的石台用城内青石板色，保持与街巷铺装一致（否则是大片米色平台）；
+        // 园林的石台铺成草色——园墙外的空地被模型遮不住，绿底才不会像一块沙地
+        const padColor = DETAILED_IDS.has(landmark.id)
+          ? landmark.type === 'garden'
+            ? SEASON_LOOKS[season].lawn
+            : SEASON_LOOKS[season].ground
+          : color;
         const onClick = (event: { stopPropagation: () => void }) => {
           event.stopPropagation();
           select(landmark.id);
@@ -150,7 +158,13 @@ export function Landmarks() {
       })}
       {/* 已完成的精细模型（阶段3） */}
       {DETAILED_MODELS.map((model) => (
-        <LandmarkModel key={model.id} id={model.id} url={model.url} baseY={model.baseY} />
+        <LandmarkModel
+          key={model.id}
+          id={model.id}
+          url={model.url}
+          baseY={model.baseY}
+          outside={model.outside}
+        />
       ))}
     </group>
   );

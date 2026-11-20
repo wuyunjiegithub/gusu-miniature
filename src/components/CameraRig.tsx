@@ -42,6 +42,8 @@ export function CameraRig() {
 
   useEffect(() => {
     if (!controls) return;
+    // 带 cam 参数时是截图复核机位，别让"回到全景"的进场动画把它推开
+    if (DEBUG_VIEW) return;
 
     const geo = selectedId ? sceneGeometry.landmarks[selectedId] : undefined;
     const centroid = geo?.centroid;
@@ -118,6 +120,44 @@ export function CameraRig() {
       controls.enabled = true;
     }
   });
+
+  return null;
+}
+
+/**
+ * 视觉复核机位（仅开发环境）：`?cam=x,y,z&target=x,y,z`。
+ * 模块加载时解析一次，供 CameraRig 跳过进场动画、DebugCamera 落位。
+ */
+const DEBUG_VIEW: { cam: [number, number, number]; target: [number, number, number] | null } | null =
+  (() => {
+    if (!import.meta.env.DEV || typeof window === 'undefined') return null;
+    const params = new URLSearchParams(window.location.search);
+    const parse = (key: string): [number, number, number] | null => {
+      const parts = params.get(key)?.split(',').map(Number);
+      if (!parts || parts.length !== 3 || parts.some((v) => !Number.isFinite(v))) return null;
+      return [parts[0], parts[1], parts[2]];
+    };
+    const cam = parse('cam');
+    if (!cam) return null;
+    return { cam, target: parse('target') };
+  })();
+
+/**
+ * 把相机落到 URL 指定的机位：核对河道、城墙、路面标线等局部用。
+ * 生产构建里 DEBUG_VIEW 恒为 null，这段逻辑不会执行。
+ */
+export function DebugCamera() {
+  const camera = useThree((state) => state.camera);
+  const controls = useThree((state) => state.controls) as unknown as ControlsLike | null;
+
+  useEffect(() => {
+    if (!DEBUG_VIEW || !controls) return;
+    const { cam, target } = DEBUG_VIEW;
+    camera.position.set(cam[0], cam[1], cam[2]);
+    if (target) controls.target.set(target[0], target[1], target[2]);
+    camera.lookAt(controls.target);
+    controls.update();
+  }, [camera, controls]);
 
   return null;
 }

@@ -35,5 +35,7 @@ export interface SceneGeometry {
   };
   cityOutline: LocalPoint2[];
   waterways: LocalPoint2[][];
+  /** 城外水道（山塘河等），渲染高度低于城内河道 */
+  outerWaterways?: LocalPoint2[][];
   landmarks: Record<string, LandmarkGeometry>;
 }

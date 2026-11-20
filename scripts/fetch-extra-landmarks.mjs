@@ -49,4 +49,16 @@ await fetchTo(
   '[out:json][timeout:30];(nwr["name"~"北寺塔|报恩寺"](31.3080,120.6050,31.3250,120.6350);way["barrier"="wall"](31.3120,120.6140,31.3220,120.6260););out geom tags;',
 );
 
+/** 西园寺（西园戒幢律寺，way 736382204）+ 院内殿宇 */
+await fetchTo(
+  'extra-xiyuansi.json',
+  '[out:json][timeout:30];(way(736382204);way["building"](31.3180,120.5850,31.3280,120.5960););out geom tags;',
+);
+
+/** 石路商圈（石路步行街 retail 面，way 561176608）+ 步行街 */
+await fetchTo(
+  'extra-shilu.json',
+  '[out:json][timeout:30];(way(561176608);way["highway"="pedestrian"]["name"="石路"](31.3080,120.5980,31.3240,120.6140);way["landuse"="retail"](31.3080,120.5980,31.3240,120.6140););out geom tags;',
+);
+
 console.log('\n抓取完成。下一步: node scripts/build-scene-data.mjs');

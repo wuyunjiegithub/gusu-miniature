@@ -1,7 +1,8 @@
 import * as THREE from 'three';
+import { GROUND_DISC_RADIUS } from '../constants/geo';
 
-/** 城外基准面覆盖 24km（与 WaterSystem 的地面尺寸一致），保证城外山体都落在平面上 */
-export const GROUND_WORLD = 24000;
+/** 外围地面圆盘直径（= 城外地面的贴图覆盖范围） */
+export const GROUND_WORLD = GROUND_DISC_RADIUS * 2;
 const SIZE = 2048;
 const CELL = 160;
 
@@ -13,8 +14,8 @@ const hash = (i: number): number => {
 const toPx = (m: number): number => ((m + GROUND_WORLD / 2) / GROUND_WORLD) * SIZE;
 
 /**
- * 城外城市肌理贴图：160m 街区 + 少量绿地。
- * 纯程序绘制，用作 24km 地面基准面的颜色，让城外
+ * 城外城市肌理贴图：160m 街区 + 绿地。
+ * 纯程序绘制，用作 11.8km 地面圆盘的颜色，让城外
  * 在俯视时读到连续的城市建成区，而不是一片裸土。
  * 灰度值贴近 1，最终色调由材质的季节色相乘得到。
  */
@@ -40,22 +41,33 @@ export function createCityGroundTexture(): THREE.CanvasTexture {
       const seed = i * 131 + j * 17;
       const px = toPx(x);
       const pz = toPx(z);
-      const park = hash(seed) > 0.94;
+      // 约 1/6 的地块做公园绿地，城外因此不会只有屋顶
+      const park = hash(seed) > 0.84;
       const tone = 0.9 + hash(seed + 3) * 0.1;
       if (park) {
-        const g = Math.round(150 + hash(seed + 5) * 26);
-        ctx.fillStyle = `rgb(${g - 26}, ${g}, ${g - 52})`;
+        const g = Math.round(146 + hash(seed + 5) * 30);
+        ctx.fillStyle = `rgb(${g - 30}, ${g}, ${g - 56})`;
+        ctx.fillRect(px, pz, cellPx, cellPx);
+        // 绿地里的树丛暗斑，远看有层次
+        ctx.fillStyle = 'rgba(96, 122, 78, 0.55)';
+        const n = 4 + Math.floor(hash(seed + 11) * 4);
+        for (let k = 0; k < n; k += 1) {
+          const bx = px + cellPx * (0.12 + hash(seed + 13 + k) * 0.72);
+          const bz = pz + cellPx * (0.12 + hash(seed + 19 + k) * 0.72);
+          const r = cellPx * (0.05 + hash(seed + 23 + k) * 0.05);
+          ctx.beginPath();
+          ctx.arc(bx, bz, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
       } else {
         const v = Math.round(236 * tone);
         ctx.fillStyle = `rgb(${v}, ${v - 1}, ${v - 7})`;
-      }
-      ctx.fillRect(px, pz, cellPx, cellPx);
+        ctx.fillRect(px, pz, cellPx, cellPx);
 
-      if (!park) {
         // 天井/院落：用更亮的天光色回填内部，形成围合式街坊
         const inset = cellPx * 0.3;
-        const v = Math.round(244 - hash(seed + 9) * 12);
-        ctx.fillStyle = `rgb(${v}, ${v}, ${v - 5})`;
+        const v2 = Math.round(244 - hash(seed + 9) * 12);
+        ctx.fillStyle = `rgb(${v2}, ${v2}, ${v2 - 5})`;
         ctx.fillRect(px + inset, pz + inset, cellPx - inset * 2, cellPx - inset * 2);
       }
     }
