@@ -1,0 +1,136 @@
+import type { Landmark } from '../types';
+
+/**
+ * 景点元数据（优先级定义见需求文档 FR-05）。
+ * 坐标与轮廓统一由 scene-geometry.json 提供（OSM 派生），此处不重复存储。
+ */
+export const LANDMARKS: Landmark[] = [
+  {
+    id: 'zhuozhengyuan',
+    name: '拙政园',
+    type: 'garden',
+    priority: 'P0',
+    worldHeritage: true,
+    description: '沙盘东部的视觉重心，水系和亭廊轮廓需要手工处理；苏州现存最大的古典园林。',
+  },
+  {
+    id: 'liuyuan',
+    name: '留园',
+    type: 'garden',
+    priority: 'P0',
+    worldHeritage: true,
+    description: '西部锚点，冠云峰和曲廊的体量关系是识别关键。',
+  },
+  {
+    id: 'pingjiang',
+    name: '平江历史街区',
+    type: 'district',
+    priority: 'P0',
+    worldHeritage: false,
+    description: '不需要每栋建模，但沿河立面需要一段"样板段"精细处理。',
+  },
+  {
+    id: 'guanqianjie',
+    name: '观前街',
+    type: 'district',
+    priority: 'P0',
+    worldHeritage: false,
+    description: '古城商业主轴，样板段沿东西向街道布置临街商铺与两端牌坊，玄妙观山门收束东端。',
+  },
+  {
+    id: 'panmen',
+    name: '盘门',
+    type: 'monument',
+    priority: 'P0',
+    worldHeritage: false,
+    description: '古城西南角唯一的"垂直地标"，瑞光塔是沙盘天际线的关键。',
+  },
+  {
+    id: 'wangshiyuan',
+    name: '网师园',
+    type: 'garden',
+    priority: 'P1',
+    worldHeritage: true,
+    description: '中小型园林代表，适合展示"精致度"。',
+  },
+  {
+    id: 'shizilin',
+    name: '狮子林',
+    type: 'garden',
+    priority: 'P1',
+    worldHeritage: true,
+    description: '假山群的几何复杂度高，需控制面数。',
+  },
+  {
+    id: 'shantangjie',
+    name: '山塘街',
+    type: 'district',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '西北方向线性地标，可做带状简化模型（阊门—虎丘段）。',
+  },
+  {
+    id: 'taohuawu',
+    name: '桃花坞片区',
+    type: 'district',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '以桃花坞大街为骨架的历史片区，唐寅故居文化区所在；样板段以沿街民居商铺与桃花景观为特征。',
+  },
+  {
+    id: 'tangyinci',
+    name: '唐寅祠',
+    type: 'monument',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '桃花坞内的唐寅纪念祠院，门厅、享堂与廊院组合，配桃花与碑刻。',
+  },
+  {
+    id: 'shuangta',
+    name: '双塔',
+    type: 'monument',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '定慧寺巷内的宋代砖塔双璧，并列七层、间距二十米，是古城东南的天际线标志。',
+  },
+  {
+    id: 'beisita',
+    name: '报恩寺·北寺塔',
+    type: 'temple',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '古城北部最高的古塔，九层八角、通高七十余米，是沙盘北向的垂直锚点。',
+  },
+  {
+    id: 'suzhou-museum',
+    name: '苏州博物馆',
+    type: 'modern',
+    priority: 'P1',
+    worldHeritage: false,
+    description: '与拙政园相邻，体量简洁，低模即可传达特征。',
+  },
+  {
+    id: 'canglangting',
+    name: '沧浪亭',
+    type: 'garden',
+    priority: 'P2',
+    worldHeritage: true,
+    description: '南部锚点，复廊和水面关系有辨识度。',
+  },
+  {
+    id: 'hanshansi',
+    name: '寒山寺',
+    type: 'temple',
+    priority: 'P2',
+    worldHeritage: false,
+    description: '位于阊门外，是否纳入取决于主城范围是否扩展到枫桥。',
+  },
+];
+
+export const LANDMARK_TYPE_LABEL: Record<Landmark['type'], string> = {
+  garden: '园林',
+  district: '街区',
+  monument: '地标',
+  modern: '现代地标',
+  temple: '宗教',
+};
