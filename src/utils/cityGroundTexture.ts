@@ -42,7 +42,9 @@ export function createCityGroundTexture(): THREE.CanvasTexture {
       const px = toPx(x);
       const pz = toPx(z);
       // 约 1/6 的地块做公园绿地，城外因此不会只有屋顶
-      const park = hash(seed) > 0.84;
+      // 用户反馈：城郊绿地不需要这种整块整块的绿色斑块，改成与街区同质的
+      // 浅灰屋面肌理，绿地在近景由 Trees 的散生林表达。
+      const park = false;
       const tone = 0.9 + hash(seed + 3) * 0.1;
       if (park) {
         const g = Math.round(146 + hash(seed + 5) * 30);

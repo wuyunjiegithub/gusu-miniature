@@ -164,7 +164,8 @@ function pickShantangSpots(): BoatSpot[] {
     const s = spacing * (k + 0.5) + (hash(seed) - 0.5) * spacing * 0.35;
     const p = at(s);
     const side = hash(seed + 5) > 0.5 ? 1 : -1;
-    const offset = side * (3.2 + hash(seed + 7) * 1.6);
+    // 山塘河现在按模型内河 8m 宽绘制，船只收在中心线 ±1.9m 内，避免搁到石驳岸上
+    const offset = side * (1 + hash(seed + 7) * 0.9);
     // 局部 +X 对齐河道切向：船头朝向 + 轻微摆动
     const rot = Math.atan2(-p.tz, p.tx);
     spots.push({

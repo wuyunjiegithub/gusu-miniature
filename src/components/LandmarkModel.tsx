@@ -5,9 +5,19 @@ import { sceneGeometry } from '../data/sceneGeometry';
 import { useSandTable } from '../store/useSandTable';
 import { SEASON_LOOKS, type Season } from '../constants/seasons';
 import { getSkyReflection } from '../utils/skyEnv';
+import { useRoads } from '../hooks/useRoads';
+import { boundsOf, fitLandmarkPlacement, getRoadClearance } from '../utils/roadClearance';
+import { trimOutlineFromRoads } from '../utils/trimOutline';
+import type { LocalPoint2 } from '../types';
 
-/** 精细 GLB 默认落在景点底座顶面；与 Landmarks 的 PAD_OVERRIDE 1.6 保持一致 */
-export const LANDMARK_BASE_Y = 1.6;
+/** 精细 GLB 默认落在景点石台顶面；与 Landmarks 的 CITY_PAD_TOP（1.1）保持一致 */
+export const LANDMARK_BASE_Y = 1.1;
+
+/**
+ * 街景型景点：模型本身就是街面/沿街铺装，"压在马路上"是设计意图，
+ * 不参与路网避让（否则一条街会被缩成一截）。
+ */
+const STREET_IDS = new Set(['pingjiang', 'guanqianjie', 'shantangjie', 'shilu', 'taohuawu']);
 
 /**
  * 材质语义：GLB 由 scripts/blender/*.py 生成，材质名带前缀，
@@ -161,6 +171,37 @@ function applyWallShader(mat: THREE.MeshStandardMaterial): void {
   mat.needsUpdate = true;
 }
 
+/**
+ * 模型水平投影点（相对模型原点，即景点质心），按顶点抽样。
+ *
+ * 这里不能用 matrixWorld：模型挂载进 group 之后 matrixWorld 已含景点质心
+ * 与缩放，用它算极坐标会得到"世界坐标"，半径变成千米级，缩放判断直接失效。
+ * 改从根节点逐级累乘 local matrix，得到相对模型原点的坐标。
+ */
+function horizontalSamples(model: THREE.Object3D): LocalPoint2[] {
+  const points: LocalPoint2[] = [];
+  const v = new THREE.Vector3();
+  const local = new THREE.Matrix4();
+  const walk = (node: THREE.Object3D, parent: THREE.Matrix4) => {
+    const m = new THREE.Matrix4().multiplyMatrices(parent, node.matrix);
+    if (node instanceof THREE.Mesh) {
+      const attr = node.geometry.getAttribute('position');
+      if (attr) {
+        const stride = Math.max(1, Math.floor(attr.count / 3000));
+        for (let i = 0; i < attr.count; i += stride) {
+          v.fromBufferAttribute(attr, i).applyMatrix4(m);
+          points.push([v.x, v.z]);
+        }
+      }
+    }
+    for (const child of node.children) walk(child, m);
+  };
+  model.updateMatrix();
+  model.traverse((node) => node.updateMatrix());
+  for (const child of model.children) walk(child, local.identity());
+  return points;
+}
+
 interface LandmarkModelProps {
   /** 景点 id，需与 scene-geometry.json 中的 key 一致 */
   id: string;
@@ -186,8 +227,37 @@ export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y, outside }: Lan
 
   const model = useMemo(() => scene.clone(true), [scene]);
   const centroid = sceneGeometry.landmarks[id]?.centroid;
+  const outline = sceneGeometry.landmarks[id]?.outline;
+  const roads = useRoads();
   const selected = selectedId === id;
   const skyReflection = useMemo(() => getSkyReflection(season), [season]);
+
+  /**
+   * 模型通常就是照 OSM 轮廓建的、尺寸与轮廓相当；压路的主因是整块模型相对
+   * 石台偏心（模型几何中心 ≠ 多边形面积质心，拙政园偏了 30~50m），
+   * 而削石台只处理了"画出来的边界"，模型外墙没动。
+   *
+   * 所以落位分两步：先把模型包围盒中心对齐石台（裁剪后）包围盒中心，
+   * 再在该位置求"不压路"的最大等比缩放——能只平移就只平移，放不下才缩。
+   *
+   * 街景型（平江路/观前街/山塘街/石路/桃花坞）模型本身就是街面，
+   * 压"路"是设计意图，跳过。
+   */
+  const placement = useMemo(() => {
+    if (!roads || !outline || !centroid || STREET_IDS.has(id)) return null;
+    const pad = boundsOf(trimOutlineFromRoads(outline, roads));
+    if (!pad) return null;
+    return fitLandmarkPlacement(
+      horizontalSamples(model),
+      pad.center,
+      [centroid.x, centroid.z],
+      getRoadClearance(roads),
+      { margin: 1.2, min: 0.55, step: 0.01 },
+    );
+  }, [roads, outline, model, centroid, id]);
+
+  const fitScale = placement?.scale ?? 1;
+  const offset = placement?.offset ?? [0, 0];
 
   useLayoutEffect(() => {
     const materials = new Set<THREE.Material>();
@@ -250,7 +320,10 @@ export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y, outside }: Lan
   return (
     <Suspense fallback={null}>
       <group
-        position={[centroid.x, baseY, centroid.z]}
+        name={`landmark-${id}`}
+        position={[centroid.x + offset[0], baseY, centroid.z + offset[1]]}
+        scale={fitScale}
+        userData={{ landmarkScale: fitScale, landmarkOffset: offset }}
         onClick={(event) => {
           event.stopPropagation();
           select(id);
@@ -262,7 +335,6 @@ export function LandmarkModel({ id, url, baseY = LANDMARK_BASE_Y, outside }: Lan
   );
 }
 
-useGLTF.preload('/models/panmen.glb');
 useGLTF.preload('/models/zhuozhengyuan.glb');
 useGLTF.preload('/models/liuyuan.glb');
 useGLTF.preload('/models/pingjiang.glb');

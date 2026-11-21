@@ -2,6 +2,7 @@ import { useLayoutEffect } from 'react';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSandTable } from '../store/useSandTable';
+import { getSkyReflection } from '../utils/skyEnv';
 import type { Season } from '../constants/seasons';
 
 interface LightPreset {
@@ -184,6 +185,22 @@ export function EnvironmentRig() {
   useLayoutEffect(() => {
     gl.toneMappingExposure = night ? 1.28 : 1.1;
   }, [gl, night]);
+
+  // 天空反射：把四季天空渐变挂为全局 environment，让白墙黛瓦、坡顶、
+  // 石板与树干统一反射同一片天光，整个沙盘的光照彼此协调。
+  // 水面与园林 GLB 已各自显式挂 envMap，不会被这里的全局值覆盖。
+  useLayoutEffect(() => {
+    scene.environment = getSkyReflection(season);
+    // 渐变天光较柔和，压低全局反射强度，避免粗糙墙面被染成一片冷白
+    (scene as THREE.Scene & { environmentIntensity: number }).environmentIntensity = night
+      ? 0.28
+      : season === 'winter'
+        ? 0.5
+        : 0.4;
+    return () => {
+      scene.environment = null;
+    };
+  }, [scene, season, night]);
 
   return (
     <group>

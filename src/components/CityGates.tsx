@@ -113,9 +113,12 @@ function Gate({ gate, winter }: { gate: CityGate; winter: boolean }) {
 /** 苏州古城九门：城墙上的城台与重檐城楼，并带名称标注 */
 export function CityGates() {
   const winter = useSandTable((state) => state.season === 'winter');
+  // 盘门由 panmen.glb 一体建模（城墙+水陆城门+城楼+瑞光塔+吴门桥），
+  // 这里不再重复生成程序化城楼，否则两座城楼叠在一起。
+  const gates = useMemo(() => CITY_GATES.filter((g) => g.name !== '盘门'), []);
   return (
     <group>
-      {CITY_GATES.map((gate) => (
+      {gates.map((gate) => (
         <Gate key={gate.name} gate={gate} winter={winter} />
       ))}
     </group>

@@ -126,3 +126,34 @@ export function splitClosedLine(
     return pts;
   }).filter((pts) => pts.length >= 2);
 }
+
+/**
+ * 取闭合轮廓上里程 [s0, s1] 之间的折线（两端插值，中间保留原始顶点）。
+ * 与 splitClosedLine 互补：CityWall 用它切掉城门洞口，城门段用它取出洞口那一段。
+ */
+export function arcBetween(line: LocalPoint2[], s0: number, s1: number): LocalPoint2[] {
+  const n = line.length;
+  const cum: number[] = [0];
+  for (let i = 1; i <= n; i += 1) {
+    const a = line[i - 1];
+    const b = line[i % n];
+    cum.push(cum[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+  }
+  const total = cum[n];
+  const pointAt = (s: number): LocalPoint2 => {
+    const t = Math.max(0, Math.min(total, s));
+    let i = 0;
+    while (i < n - 1 && cum[i + 1] < t) i += 1;
+    const segLen = cum[i + 1] - cum[i] || 1;
+    const f = (t - cum[i]) / segLen;
+    const a = line[i];
+    const b = line[(i + 1) % n];
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+  };
+  const out: LocalPoint2[] = [pointAt(s0)];
+  for (let i = 1; i < n; i += 1) {
+    if (cum[i] > s0 && cum[i] < s1) out.push(line[i]);
+  }
+  out.push(pointAt(s1));
+  return out;
+}

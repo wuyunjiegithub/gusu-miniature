@@ -1,10 +1,12 @@
 import type { Landmark } from '../types';
+import { EXTRA_LANDMARKS } from './extraLandmarks';
+import { HERITAGE_LANDMARKS } from './heritage';
 
 /**
  * 景点元数据（优先级定义见需求文档 FR-05）。
  * 坐标与轮廓统一由 scene-geometry.json 提供（OSM 派生），此处不重复存储。
  */
-export const LANDMARKS: Landmark[] = [
+const CITY_LANDMARKS: Landmark[] = [
   {
     id: 'zhuozhengyuan',
     name: '拙政园',
@@ -141,6 +143,32 @@ export const LANDMARKS: Landmark[] = [
     worldHeritage: false,
     description: '阊门外的现代商业街区，步行街两侧的低层商铺与少量高楼构成城西商业中心。',
   },
+];
+
+/**
+ * 景点总表：城内 17 处 + 城外补建的地标（虎丘塔）+ 城内文保单位（国保/省保）。
+ * 补建项与文保项与城内项同源，侧栏、聚焦、标签都走同一套字段。
+ * （吴门桥已并入盘门 panmen.glb 一体建模，不再单独补建。）
+ */
+export const LANDMARKS: Landmark[] = [
+  ...CITY_LANDMARKS,
+  ...EXTRA_LANDMARKS.map(({ id, name, type, priority, worldHeritage, description }) => ({
+    id,
+    name,
+    type,
+    priority,
+    worldHeritage,
+    description,
+  })),
+  // 文保单位：统一 P3，供侧栏单独分组展示
+  ...HERITAGE_LANDMARKS.map(({ id, name, type, level, description }) => ({
+    id,
+    name,
+    type,
+    priority: 'P3' as const,
+    worldHeritage: false,
+    description: `${level === 'national' ? '国保 · ' : '省保 · '}${description}`,
+  })),
 ];
 
 export const LANDMARK_TYPE_LABEL: Record<Landmark['type'], string> = {

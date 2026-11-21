@@ -4,8 +4,85 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>姑苏古城数字沙盘</title>
+    <!-- 内联 SVG 图标：省掉一次 favicon.ico 的 404 -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23161d29'/%3E%3Cpath d='M6 15 L16 6.5 L26 15' fill='none' stroke='%23c9a86a' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M9.5 15 V25.5 H22.5 V15' fill='none' stroke='%23c9a86a' stroke-width='2.2' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <!--
+      首屏启动页：写在 HTML 里、样式内联，不依赖任何 JS/CSS 打包产物。
+      沙盘第一帧要把 2.5 万栋建筑、路网、桥位一次性算进场景，这段时间主线程
+      是锁死的，React 画不出任何东西——没有这层静态画面，用户看到的就是白屏卡住。
+      场景出图后由 src/components/Scene.tsx 的 BootGate 移除。
+    -->
+    <style>
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: radial-gradient(circle at 50% 42%, #1b2534 0%, #0e1420 62%, #0a0f18 100%);
+        color: #e8e6e0;
+        font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+        transition: opacity 320ms ease;
+      }
+      #boot.is-done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot .boot-title {
+        font-size: 22px;
+        letter-spacing: 0.32em;
+        text-indent: 0.32em;
+        color: #eae2cf;
+      }
+      #boot .boot-sub {
+        font-size: 11px;
+        letter-spacing: 0.5em;
+        text-indent: 0.5em;
+        color: #8a97a8;
+        text-transform: uppercase;
+      }
+      #boot .boot-bar {
+        width: 188px;
+        height: 2px;
+        margin-top: 10px;
+        overflow: hidden;
+        background: rgba(200, 214, 232, 0.14);
+      }
+      #boot .boot-bar i {
+        display: block;
+        width: 40%;
+        height: 100%;
+        background: linear-gradient(90deg, rgba(201, 168, 106, 0), #c9a86a, rgba(201, 168, 106, 0));
+        animation: boot-slide 1.25s ease-in-out infinite;
+      }
+      @keyframes boot-slide {
+        0% {
+          transform: translateX(-110%);
+        }
+        100% {
+          transform: translateX(360%);
+        }
+      }
+      #boot .boot-tip {
+        font-size: 12px;
+        color: #7f8c9d;
+        letter-spacing: 0.08em;
+      }
+    </style>
   </head>
   <body>
+    <div id="boot">
+      <div class="boot-title">姑苏古城</div>
+      <div class="boot-sub">Digital Sand Table</div>
+      <div class="boot-bar"><i></i></div>
+      <p class="boot-tip">正在生成城市模型…</p>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

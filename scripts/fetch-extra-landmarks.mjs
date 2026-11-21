@@ -61,4 +61,12 @@ await fetchTo(
   '[out:json][timeout:30];(way(561176608);way["highway"="pedestrian"]["name"="石路"](31.3080,120.5980,31.3240,120.6140);way["landuse"="retail"](31.3080,120.5980,31.3240,120.6140););out geom tags;',
 );
 
+/** 桃花坞片区（唐寅祠 way 529003248 + 桃花坞大街街区骨架）
+ *  build-scene-data.mjs:433-470 消费此文件产出 tangyinci / taohuawu 两处景点。
+ *  历史断链：此查询长期缺失，从零拉取会永久丢失这两处景点。 */
+await fetchTo(
+  'extra-taohuawu.json',
+  '[out:json][timeout:40];(way(529003248);way["name"="桃花坞大街"](31.3100,120.5950,31.3350,120.6220);nwr["name"~"唐寅祠"](31.3100,120.5950,31.3350,120.6220););out geom tags;',
+);
+
 console.log('\n抓取完成。下一步: node scripts/build-scene-data.mjs');

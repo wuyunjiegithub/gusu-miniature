@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 数据门禁依赖 data/raw/* 与生成物（均已入库），不需要网络抓取；
+# puppeteer 浏览器探针需要本机 Chrome，不在 CI 运行（见 README）。
+jobs:
+  build-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖（可复现）
+        run: npm ci
+
+      - name: 类型检查 + 生产构建
+        # tsc 全量校验 + vite 分包构建；node_modules 在 CI 为全新安装，
+        # 不存在本地 DLP 加密 .d.ts 的编码问题。
+        run: npm run build
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 数据门禁
+        # 校验原始数据/生成物完整性与几何常识，坏数据退出码非 0。
+        run: npm run data:qa
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # 单测与构建都通过后，本 job 汇总一个状态，可作为分支保护的唯一检查项。
+  all-green:
+    needs: build-and-check
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "构建、单测、数据门禁全部通过"

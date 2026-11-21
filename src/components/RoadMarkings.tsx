@@ -4,9 +4,13 @@ import { useRoads } from '../hooks/useRoads';
 import { useSandTable } from '../store/useSandTable';
 import { buildCrosswalkGeometry, findJunctions, type Junction } from '../utils/junctions';
 
-/** 主干道路面高度（与 Roads 的 MAJOR_ROAD_Y 一致） */
-const ROAD_Y = 1.3;
-/** 标线贴片离路面的微小抬升，避免与路面共面闪烁 */
+/** 主干道路面高度（与 Roads 的 MAJOR_ROAD_Y 保持一致：1.38） */
+const ROAD_Y = 1.38;
+/**
+ * 标线贴片离路面的微小抬升，避免与路面共面闪烁。
+ * 必须严格高于主干道路面，否则整个斑马线会被路面深度挡住——
+ * 以前这里是 1.36 < 1.38，斑马线其实一直埋在路面下面看不见。
+ */
 const DECAL_Y = ROAD_Y + 0.06;
 /** 斑马线距路口中心的距离 */
 const CROSSWALK_SETBACK = 15;
@@ -31,11 +35,19 @@ const hash = (v: number): number => {
 export function RoadMarkings() {
   const roads = useRoads();
   const night = useSandTable((state) => state.time === 'night');
+  // LOD：斑马线与红绿灯是近景才可辨的精细路面细节，只在 L2 显示（FR-11）
+  const lod = useSandTable((state) => state.lod);
 
-  const junctions = useMemo<Junction[]>(
-    () => (roads ? findJunctions(roads.major, { maxRadius: 2700, limit: 220 }) : []),
-    [roads],
-  );
+  const junctions = useMemo<Junction[]>(() => {
+    if (!roads) return [];
+    // 老城路口很密：直接逐个铺斑马线会叠成一片白色格纹，
+    // 先按 55m 间距稀疏化，只保留真正像"路口"的位置。
+    const kept: Junction[] = [];
+    for (const junction of findJunctions(roads.major, { maxRadius: 2700, limit: 260 })) {
+      if (kept.every((k) => Math.hypot(k.x - junction.x, k.z - junction.z) > 55)) kept.push(junction);
+    }
+    return kept;
+  }, [roads]);
 
   const crosswalkGeo = useMemo(() => {
     if (junctions.length === 0) return null;
@@ -148,36 +160,40 @@ export function RoadMarkings() {
 
   return (
     <group>
+      {/* 斑马线在 L1 中景也要可见：路口没有斑马线时，车道线在远处就像一条光板带；
+          灯杆与灯头仍是近景细节，留在 L2（远处只有一两个像素，反而变噪点） */}
       {crosswalkGeo && (
-        <mesh geometry={crosswalkGeo} renderOrder={1}>
+        <mesh geometry={crosswalkGeo} renderOrder={1} visible={lod !== 'L0'}>
           <meshStandardMaterial
             color="#e6e1d2"
             roughness={0.9}
             polygonOffset
-            polygonOffsetFactor={-2}
-            polygonOffsetUnits={-2}
+            polygonOffsetFactor={-4}
+            polygonOffsetUnits={-4}
             side={THREE.DoubleSide}
           />
         </mesh>
       )}
-      <instancedMesh
-        ref={poleRef}
-        args={[poleGeo, poleMat, Math.max(1, signals.length)]}
-        count={signals.length}
-        frustumCulled={false}
-      />
-      <instancedMesh
-        ref={redRef}
-        args={[headGeo, redMat, Math.max(1, reds.length)]}
-        count={reds.length}
-        frustumCulled={false}
-      />
-      <instancedMesh
-        ref={greenRef}
-        args={[headGeo, greenMat, Math.max(1, greens.length)]}
-        count={greens.length}
-        frustumCulled={false}
-      />
+      <group visible={lod === 'L2'}>
+        <instancedMesh
+          ref={poleRef}
+          args={[poleGeo, poleMat, Math.max(1, signals.length)]}
+          count={signals.length}
+          frustumCulled={false}
+        />
+        <instancedMesh
+          ref={redRef}
+          args={[headGeo, redMat, Math.max(1, reds.length)]}
+          count={reds.length}
+          frustumCulled={false}
+        />
+        <instancedMesh
+          ref={greenRef}
+          args={[headGeo, greenMat, Math.max(1, greens.length)]}
+          count={greens.length}
+          frustumCulled={false}
+        />
+      </group>
     </group>
   );
 }

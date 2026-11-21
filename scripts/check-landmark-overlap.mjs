@@ -3,6 +3,7 @@
  * 用法: node scripts/check-landmark-overlap.mjs
  */
 import { readFile } from 'node:fs/promises';
+import { gate, report } from './lib/qa-gate.mjs';
 
 const scene = JSON.parse(
   await readFile(new URL('../src/data/scene-geometry.json', import.meta.url), 'utf8'),
@@ -52,3 +53,8 @@ for (const [id, landmark] of Object.entries(scene.landmarks)) {
   console.log(`${id.padEnd(16)} ${parts.length ? parts.join(' ') : 'OK'}`);
 }
 console.log(`总计重叠建筑: ${total}`);
+
+// 门禁：panmen 单处重叠是已知可接受的基线（城墙贴近民居），超过 5 处说明建筑或景点轮廓错位。
+gate('景点重叠建筑总数', total, { max: 5, note: '基线=1(panmen)，>5 视为轮廓/建筑错位' });
+gate('含轮廓景点数（防空数据）', Object.values(scene.landmarks).filter((l) => l.outline).length, { min: 10 });
+report('check-landmark-overlap');

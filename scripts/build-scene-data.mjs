@@ -260,7 +260,176 @@ for (const chain of chainWays(waterWays, 60)) {
 }
 // 盘门水门不再作为城内河道输出：它在城墙外要降到护城河标高，
 // 由 WaterSystem 的 PANMEN_GATE 单独铺水面（避免两层水面叠在一起）。
-console.log(`[水系] 城内线段组 ${waterways.length} 组`);
+
+/**
+ * 城内河道是沙盘骨架，必须连成网。
+ * OSM 里散落着若干 10~80m 的孤立水系段（断头浜、院内水池），按 30m 宽铺出来
+ * 就是城市中间一块块蓝色水洼，既不成河也不可能行船。这里整体剔除，
+ * 只保留两类：长度 ≥150m 的主河道；两端都贴着别的河道或护城河的短段。
+ */
+const distToSeg = (x, z, a, b) => {
+  const dx = b[0] - a[0];
+  const dz = b[1] - a[1];
+  const l2 = dx * dx + dz * dz;
+  let t = l2 > 0 ? ((x - a[0]) * dx + (z - a[1]) * dz) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(x - (a[0] + t * dx), z - (a[1] + t * dz));
+};
+const lineLen = (l) => {
+  let s = 0;
+  for (let i = 0; i < l.length - 1; i += 1) s += Math.hypot(l[i + 1][0] - l[i][0], l[i + 1][1] - l[i][1]);
+  return s;
+};
+const ringDistToOutline = (x, z) => {
+  let best = Infinity;
+  for (let i = 0; i < cityOutlineLocal.length - 1; i += 1) {
+    best = Math.min(
+      best,
+      distToSeg(x, z, [cityOutlineLocal[i].x, cityOutlineLocal[i].z], [cityOutlineLocal[i + 1].x, cityOutlineLocal[i + 1].z]),
+    );
+  }
+  return best;
+};
+const keptWaterways = waterways.filter((line, i) => {
+  if (lineLen(line) >= 150) return true;
+  for (const end of [line[0], line[line.length - 1]]) {
+    let best = ringDistToOutline(end[0], end[1]);
+    for (let j = 0; j < waterways.length && best > 40; j += 1) {
+      if (j === i) continue;
+      const other = waterways[j];
+      for (let k = 0; k < other.length - 1 && best > 40; k += 1) {
+        best = Math.min(best, distToSeg(end[0], end[1], other[k], other[k + 1]));
+      }
+    }
+    if (best > 40) return false;
+  }
+  return true;
+});
+const waterDropped = waterways.length - keptWaterways.length;
+waterways.length = 0;
+waterways.push(...keptWaterways);
+console.log(`[水系] 城内线段组 ${waterways.length} 组（剔除孤立水洼 ${waterDropped} 段）`);
+
+/* ---------------- 2a. 地图水道退出"自带河道"的模型范围 ---------------- */
+
+/**
+ * 平江路等景点模型内部已经自带水面网格（平江路：7m 宽的平江河，位于街道西侧）。
+ * OSM 城内水道在这些位置再铺一条 30m 宽的河，同一条河就出现两份且互不对齐，
+ * 模型沿河民居直接被泡进水里（平江路东北角最明显）。
+ * 模型是位置固定的既有资产，所以让"地图水道"退出模型包围盒：
+ * 盒内的水道段裁掉，该处只保留模型自带的那条河。
+ */
+const MODEL_BOUNDS = JSON.parse(
+  await readFile(new URL('../src/data/model-bounds.json', import.meta.url), 'utf8'),
+);
+/** 自带 water 网格的模型（读 GLB header 得出），只有它们需要避让 */
+const MODEL_WATER_IDS = [
+  'canglangting', 'liuyuan', 'pingjiang', 'shantangjie', 'shizilin',
+  'suzhou-museum', 'wangshiyuan', 'xiyuansi', 'zhuozhengyuan',
+];
+const waterBoxes = MODEL_WATER_IDS
+  .map((id) => MODEL_BOUNDS[id])
+  .filter(Boolean)
+  .map(([minX, maxX, minZ, maxZ]) => ({ minX, maxX, minZ, maxZ }));
+
+/** 线段与轴对齐包围盒的相交参数区间 [t0, t1]（Liang–Barsky），无交返回 null */
+const segBoxInterval = (a, b, box) => {
+  let t0 = 0;
+  let t1 = 1;
+  const checks = [
+    [a[0] - b[0], a[0] - box.minX],
+    [b[0] - a[0], box.maxX - a[0]],
+    [a[1] - b[1], a[1] - box.minZ],
+    [b[1] - a[1], box.maxZ - a[1]],
+  ];
+  for (const [p, q] of checks) {
+    if (Math.abs(p) < 1e-9) {
+      if (q < 0) return null;
+      continue;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return null;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return null;
+      if (r < t1) t1 = r;
+    }
+  }
+  return t0 < t1 ? [t0, t1] : null;
+};
+
+/** 折线裁掉落在任一包围盒内的部分，返回若干段 */
+const clipOutOfBoxes = (line, boxes) => {
+  const pieces = [];
+  let current = [];
+  const pushPoint = (p) => {
+    const last = current[current.length - 1];
+    if (last && Math.hypot(last[0] - p[0], last[1] - p[1]) < 1e-6) return;
+    current.push(p);
+  };
+  const flush = () => {
+    if (current.length >= 2) pieces.push(current);
+    current = [];
+  };
+  for (let i = 0; i < line.length - 1; i += 1) {
+    const a = line[i];
+    const b = line[i + 1];
+    const hits = [];
+    for (const box of boxes) {
+      const iv = segBoxInterval(a, b, box);
+      if (iv) hits.push(iv);
+    }
+    hits.sort((m, n) => m[0] - n[0]);
+    const merged = [];
+    for (const iv of hits) {
+      const last = merged[merged.length - 1];
+      if (last && iv[0] <= last[1] + 1e-9) last[1] = Math.max(last[1], iv[1]);
+      else merged.push([iv[0], iv[1]]);
+    }
+    const at = (t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    let cursor = 0;
+    for (const iv of merged) {
+      if (iv[0] > cursor + 1e-9) {
+        pushPoint(at(cursor));
+        pushPoint(at(iv[0]));
+        flush();
+      }
+      cursor = Math.max(cursor, iv[1]);
+    }
+    if (cursor < 1 - 1e-9) {
+      pushPoint(at(cursor));
+      pushPoint(b);
+    }
+  }
+  flush();
+  return pieces;
+};
+
+let waterTrimmed = 0;
+let waterTrimMeters = 0;
+const trimmedWaterways = [];
+for (const line of waterways) {
+  const before = lineLen(line);
+  let after = 0;
+  for (const piece of clipOutOfBoxes(line, waterBoxes)) {
+    const len = lineLen(piece);
+    if (len < 40) continue; // 残段只是水坑
+    trimmedWaterways.push(piece);
+    after += len;
+  }
+  if (before - after > 1) {
+    waterTrimmed += 1;
+    waterTrimMeters += before - after;
+  }
+}
+if (waterTrimmed > 0) {
+  waterways.length = 0;
+  waterways.push(...trimmedWaterways);
+  console.log(
+    `[水系] ${waterTrimmed} 条水道与模型自带河道重叠，裁掉 ${Math.round(waterTrimMeters)} 米（该处只留模型内河）`,
+  );
+}
 
 /* ---------------- 2b. 城外水道：山塘河（阊门—虎丘） ---------------- */
 
@@ -282,6 +451,31 @@ for (let i = outerWaterways.length - 1; i >= 0; i -= 1) {
   else outerWaterways.splice(i, 1);
 }
 console.log(`[水系] 城外山塘河 ${outerWaterways.length} 组`);
+
+/* ---------------- 2c. 城外补建河道：上塘河（阊门—枫桥—寒山寺） ----------------
+ * OSM 只给了山塘河一条城外水道，寒山寺/枫桥一带就只剩旱地。
+ * 这里按真实走向补一条上塘河，并让它从留园北侧（园墙外约 30m）通过：
+ * 早先这条河是画在 sceneGeometry.ts 里的运行期直线，直接穿过了留园园子
+ * （园中央的水池与河连成一片），而且 build-roads 看不到它，沿河道路整段
+ * 泡在水里无法避让。落到数据层后，路网避让、桥位、水面渲染共用同一条折线。
+ */
+const SHANGTANG_RIVER = [
+  [-2092, -445], // 阊门西（接护城河）
+  [-2580, -590],
+  // 绕开留园的一段要缓：折点加在河道中线之外，避免水面折线在路口甩出尖角
+  [-2800, -655],
+  [-2950, -745],
+  [-3060, -872], // 留园北：绕到园墙外，河心距园界 30m
+  [-3160, -905],
+  [-3300, -918],
+  [-3560, -915],
+  [-4100, -960],
+  [-4620, -1030],
+  [-5120, -1090],
+  [-5393, -1135], // 枫桥
+];
+outerWaterways.push(SHANGTANG_RIVER);
+console.log(`[水系] 含补建上塘河 共 ${outerWaterways.length} 组`);
 
 /* ---------------- 3. 景点轮廓与坐标 ---------------- */
 
@@ -343,6 +537,44 @@ for (const [name, ways] of Object.entries(streetWays)) {
     };
   }
   console.log(`[街道] ${name}: ${ways.length} 条 way → 最长链 ${longest.length} 点`);
+}
+
+/**
+ * 山塘河对齐精细模型：
+ * 模型内河西岸在街道中心线 +7.7m 处（脚本里 u=-7.7，世界方向为左法线）。
+ * 这里直接用山塘街折线偏移生成绘制河道中心线，保证模型水面与绘制水面完全重合，
+ * 而不是让 OSM 河道和模型河道并排出现成"两条河"。
+ */
+function offsetStreetRiver(line, distance) {
+  const out = [];
+  for (let i = 0; i < line.length; i += 1) {
+    const prev = line[Math.max(0, i - 1)];
+    const next = line[Math.min(line.length - 1, i + 1)];
+    let tx = next[0] - prev[0];
+    let tz = next[1] - prev[1];
+    const l = Math.hypot(tx, tz) || 1;
+    tx /= l;
+    tz /= l;
+    // 左法线 (-tz, tx)：与模型 Blender 脚本里 u=+7.7 的河道完全重合
+    out.push([line[i][0] - tz * distance, line[i][1] + tx * distance]);
+  }
+  return out;
+}
+
+if (landmarks.shantangjie?.path?.length > 1 && outerWaterways.length > 0) {
+  const oldRiver = outerWaterways[0];
+  const aligned = offsetStreetRiver(landmarks.shantangjie.path, 7.7);
+  const moatMouth = oldRiver[oldRiver.length - 1];
+  if (moatMouth) aligned.unshift([moatMouth[0], moatMouth[1]]);
+  // 山塘街折线尾端伸进虎丘山体；河道不能爬坡，按山脚半径剪掉，避免"河上山"。
+  const hillsRaw = JSON.parse(await readFile(new URL('../src/data/hills.json', import.meta.url), 'utf8'));
+  const hillDiscs = hillsRaw.map((h) => ({ ...toLocal(h.lon, h.lat), r: h.radius * 1.02 }));
+  const outsideHills = ([x, z]) => hillDiscs.every((h) => Math.hypot(x - h.x, z - h.z) > h.r);
+  while (aligned.length > 2 && !outsideHills(aligned[aligned.length - 1])) aligned.pop();
+  outerWaterways[0] = aligned.map(
+    ([x, z]) => [Math.round(x * 10) / 10, Math.round(z * 10) / 10],
+  );
+  console.log(`[河道] 山塘河已对齐山塘街模型内河：${outerWaterways[0].length} 点，偏移 7.7m，阊门端接护城河`);
 }
 
 // 寒山寺（阊门外）

@@ -1,12 +1,29 @@
 """盘门三景（水陆城门 + 瑞光塔 + 吴门桥）程序化建模并导出 GLB。
 
-坐标约定：Blender +X = 东，+Y = 北，+Z = 上；单位为米，原点为景点质心。
-glTF 导出后 +Z→+Y（up），+Y→-Z，与网页场景坐标系一致。
+坐标约定：Blender +X = 东，+Y = 北，+Z = 上；单位为米。
+glTF 导出（export_yup）后 +Z→+Y（up），+Y→-Z，与网页场景坐标系一致：
+世界 +x = 东，-z = 北，+y = 上。
+
+按真实尺度（2026 复核）：
+- 盘门城墙：现存段长约 300m、高 8.1m、厚约 12m（水门处因内外两重纵深约 24m）。
+- 水门：内外两重、纵深 24.5m；内门第三道拱最大，高 9.7m、宽 9.3m。
+- 陆门：内外两重，中为方形瓮城（内周长约 180m）。
+- 城楼：1986 年复建，二层重檐歇山顶，阔 15.5m、高 11.3m、进深 8.65m。
+- 吴门桥：单孔石拱桥，全长 66.3m、中宽 4.8m、拱券净跨 16m、矢高约 9m，
+  南北走向，跨护城河（城墙南侧）。
+- 瑞光塔：七级八面楼阁式砖塔，高约 43m。
+
+布局（Blender 局部坐标，城墙中心为原点、城墙沿 X 东西向）：
+- 城墙沿 X：X ∈ [-150, 150]（300m），厚沿 Y：Y ∈ [-6, 6]（12m），高 8.1m。
+- 水门洞：X=+13，宽 9.3m，沿 Y 穿透。
+- 陆门洞：X=-17，宽 7m，沿 Y 穿透。
+- 城楼：X=0 附近，跨城墙顶。
+- 吴门桥：Y=-66（城墙南侧、护城河中心），沿 Y 南北走向，全长 66.3m。
+- 瑞光塔：X=+58、Y=+150（城墙北侧城内），高 43m。
 """
 
 import math
 import os
-import sys
 
 import bpy
 import bmesh
@@ -152,7 +169,7 @@ class Builder:
         """把本段几何并入按材质分组的缓存，最终每种材质只生成一个 mesh。
 
         rot / pivot：可选绕 Z 轴旋转（弧度）及旋转中心，便于把同一套
-        沿 X 生成的构件复用到不同朝向（如与城墙垂直的吴门桥）。
+        沿 X 生成的构件复用到不同朝向。
         """
         entry = MERGED.setdefault(material.name, [material, [], []])
         offset = len(entry[1])
@@ -199,14 +216,24 @@ MAT_BRIDGE = material("bridge", hexc("a9a294"), 0.94)
 root = None
 
 
-# ---------------------------------------------------------------- 水陆城门
+# ---------------------------------------------------------------- 城墙
+
+# 城墙尺寸（真实）：长 300m、高 8.1m、厚 12m
+WALL_X0, WALL_X1 = -150.0, 150.0
+WALL_HALF_T = 6.0  # 半厚（Y 方向 ±6m）
+WALL_H = 8.1
 
 
-def arched_wall(name, x0, x1, y0, y1, h, openings, mat):
-    """带拱形门洞的城墙体块。openings: [(cx, 宽, 起拱高)]"""
+def wall_with_gates():
+    """东西向城墙 + 水门洞（东侧）+ 陆门洞（西侧），门洞沿 Y 方向穿透。
+
+    门洞在城墙上挖出「沿 X 方向分段、拱形顶」的开口：
+    openings = [(cx, 宽, 起拱高)]。
+    """
     b = Builder()
-    # 前后面按 x 分段分解，保证拱洞区域被精确挖空
-    cuts = sorted({x0, x1} | {o[0] - o[1] / 2 for o in openings} | {o[0] + o[1] / 2 for o in openings})
+    openings = [(-17.0, 7.0, 4.6), (13.0, 9.3, 5.6)]
+    # 前后（南/北）两个墙面，按 x 分段挖拱洞
+    cuts = sorted({WALL_X0, WALL_X1} | {o[0] - o[1] / 2 for o in openings} | {o[0] + o[1] / 2 for o in openings})
     arch_of = {}
     for cx, w, spring in openings:
         arch_of[(round(cx - w / 2, 4), round(cx + w / 2, 4))] = (cx, w, spring)
@@ -217,11 +244,11 @@ def arched_wall(name, x0, x1, y0, y1, h, openings, mat):
         key = (round(xa, 4), round(xb, 4))
         segments.append((xa, xb, arch_of.get(key)))
 
+    y0, y1 = -WALL_HALF_T, WALL_HALF_T
     for y in (y0, y1):
-        # 实心段
         for xa, xb, arch in segments:
             if arch is None:
-                b.quad((xa, y, 0), (xb, y, 0), (xb, y, h), (xa, y, h))
+                b.quad((xa, y, 0), (xb, y, 0), (xb, y, WALL_H), (xa, y, WALL_H))
                 continue
             cx, w, spring = arch
             r = w / 2
@@ -232,15 +259,14 @@ def arched_wall(name, x0, x1, y0, y1, h, openings, mat):
                 ax0, ax1 = cx + t0 * r, cx + t1 * r
                 az0 = spring + math.sqrt(max(0.0, r * r - (t0 * r) ** 2))
                 az1 = spring + math.sqrt(max(0.0, r * r - (t1 * r) ** 2))
-                b.quad((ax0, y, az0), (ax1, y, az1), (ax1, y, h), (ax0, y, h))
+                b.quad((ax0, y, az0), (ax1, y, az1), (ax1, y, WALL_H), (ax0, y, WALL_H))
 
-    # 外轮廓四面
-    b.quad((x0, y0, 0), (x0, y1, 0), (x0, y1, h), (x0, y0, h))
-    b.quad((x1, y0, 0), (x1, y1, 0), (x1, y1, h), (x1, y0, h))
-    b.quad((x0, y0, h), (x1, y0, h), (x1, y1, h), (x0, y1, h))
-    b.quad((x0, y0, 0), (x1, y0, 0), (x1, y1, 0), (x0, y1, 0))
+    # 东西两端封口 + 顶面
+    b.quad((WALL_X0, y0, 0), (WALL_X0, y1, 0), (WALL_X0, y1, WALL_H), (WALL_X0, y0, WALL_H))
+    b.quad((WALL_X1, y0, 0), (WALL_X1, y1, 0), (WALL_X1, y1, WALL_H), (WALL_X1, y0, WALL_H))
+    b.quad((WALL_X0, y0, WALL_H), (WALL_X1, y0, WALL_H), (WALL_X1, y1, WALL_H), (WALL_X0, y1, WALL_H))
 
-    # 每个门洞的侧壁与拱顶
+    # 门洞侧壁（沿 Y 方向的洞壁）与拱顶
     for cx, w, spring in openings:
         r = w / 2
         for jx in (cx - r, cx + r):
@@ -254,166 +280,167 @@ def arched_wall(name, x0, x1, y0, y1, h, openings, mat):
             az1 = spring + math.sqrt(max(0.0, r * r - (t1 * r) ** 2))
             b.quad((ax0, y0, az0), (ax1, y0, az1), (ax1, y1, az1), (ax0, y1, az0))
 
-    return b.build(name, mat, root)
+    return b.build("panmen_wall", MAT_STONE, root)
 
 
-# 主城墙：东西向，含陆门（西）与水门（东）
-WALL_Y0, WALL_Y1 = 18.0, 40.0
-WALL_H = 12.0
-arched_wall(
-    "panmen_wall",
-    -78.0,
-    78.0,
-    WALL_Y0,
-    WALL_Y1,
-    WALL_H,
-    [(-17.0, 7.0, 5.0), (13.0, 11.0, 4.6)],
-    MAT_STONE,
-)
+wall_with_gates()
 
-# 城墙延伸段
-for i, (x0, x1) in enumerate([(-160.0, -78.0), (78.0, 158.0)]):
+
+# 垛口：沿外侧（南侧 Y=-6）墙顶连续排布
+def merlons():
     b = Builder()
-    b.box(x0, x1, WALL_Y0, WALL_Y1, 0.0, 10.4)
-    b.build(f"wall_run_{i}", MAT_STONE, root)
-    # 女墙压顶
-    b = Builder()
-    b.box(x0, x1, WALL_Y0, WALL_Y1, 10.4, 10.9)
-    b.build(f"wall_cap_{i}", MAT_STONE_DARK, root)
-
-# 垛口：沿外侧墙顶连续排布，拉出城墙的纵向线条
-for x in range(-158, 158, 6):
-    top = WALL_H if -78.0 <= x <= 78.0 else 10.9
-    merlon = Builder()
-    merlon.box(x, x + 2.6, WALL_Y0, WALL_Y0 + 2.6, top, top + 1.1)
-    merlon.build("wall_merlon", MAT_STONE_DARK, root)
+    for x in range(-148, 148, 6):
+        b.box(x, x + 2.6, -WALL_HALF_T, -WALL_HALF_T + 1.4, WALL_H, WALL_H + 1.0)
+        b.box(x, x + 2.6, WALL_HALF_T - 1.4, WALL_HALF_T, WALL_H, WALL_H + 1.0)
+    return b.build("wall_merlon", MAT_STONE_DARK, root)
 
 
-# 城楼：双层重檐
-tower = Builder()
-tower.box(-36.0, 32.0, WALL_Y0 + 2.0, WALL_Y1 - 2.0, WALL_H, WALL_H + 1.6)
-tower.build("tower_podium", MAT_STONE_DARK, root)
+merlons()
 
-tower = Builder()
-tower.box(-33.0, 29.0, WALL_Y0 + 4.0, WALL_Y1 - 4.0, WALL_H + 1.6, WALL_H + 7.0)
-tower.build("tower_lower", MAT_WOOD, root)
 
-tower = Builder()
-tower.hip_roof(-38.0, 34.0, WALL_Y0 + 1.0, WALL_Y1 - 1.0, WALL_H + 7.0, 3.0, 16.0)
-tower.build("tower_eave_1", MAT_TILE, root)
+# ---------------------------------------------------------------- 城楼
 
-tower = Builder()
-tower.box(-25.0, 21.0, WALL_Y0 + 6.0, WALL_Y1 - 6.0, WALL_H + 8.6, WALL_H + 13.2)
-tower.build("tower_upper", MAT_WOOD, root)
+def gate_tower():
+    """二层重檐歇山顶城楼：阔 15.5m、高 11.3m、进深 8.65m，落在城墙顶。"""
+    # 城台（城墙顶上的基座）
+    p = Builder()
+    p.box(-9.0, 9.0, -5.0, 5.0, WALL_H, WALL_H + 1.5)
+    p.build("tower_podium", MAT_STONE_DARK, root)
 
-tower = Builder()
-tower.hip_roof(-30.0, 26.0, WALL_Y0 + 3.0, WALL_Y1 - 3.0, WALL_H + 13.2, 4.6, 14.0)
-tower.build("tower_eave_2", MAT_TILE, root)
+    # 下层
+    t = Builder()
+    t.box(-7.75, 7.75, -4.3, 4.3, WALL_H + 1.5, WALL_H + 6.5)
+    t.build("tower_lower", MAT_WOOD, root)
+    t = Builder()
+    t.hip_roof(-9.0, 9.0, -5.0, 5.0, WALL_H + 6.5, 2.4, 6.0)
+    t.build("tower_eave_1", MAT_TILE, root)
+
+    # 上层
+    t = Builder()
+    t.box(-5.6, 5.6, -3.2, 3.2, WALL_H + 7.6, WALL_H + 11.3)
+    t.build("tower_upper", MAT_WOOD, root)
+    t = Builder()
+    t.hip_roof(-6.8, 6.8, -4.0, 4.0, WALL_H + 11.3, 3.0, 4.6)
+    t.build("tower_eave_2", MAT_TILE, root)
+
+
+gate_tower()
 
 
 # ---------------------------------------------------------------- 瑞光塔
 
-
-def pagoda(cx, cy):
+def pagoda(cx, cy, height=43.0):
+    """七级八面楼阁式砖塔（真实高约 43m）。"""
     platform = Builder()
-    platform.prism(cx, cy, 0.0, 1.6, 10.4, 10.0, 8)
+    platform.prism(cx, cy, 0.0, 1.6, 6.5, 6.2, 8)
     platform.build("pagoda_platform", MAT_STONE, root)
 
-    storeys = [
-        (9.0, 7.8, 5.4),
-        (7.8, 6.9, 4.8),
-        (6.9, 6.1, 4.6),
-        (6.1, 5.4, 4.4),
-        (5.4, 4.8, 4.2),
-        (4.8, 4.3, 4.0),
-        (4.3, 3.8, 3.8),
-    ]
+    n = 7
     z = 1.6
-    for i, (r0, r1, height) in enumerate(storeys):
+    r = 6.0
+    tier_h = (height - 1.6 - 3.0) / n  # 每层平均高度
+    for i in range(n):
+        r0 = r * (1 - 0.07 * i)
+        r1 = r * (1 - 0.07 * (i + 1))
         body = Builder()
-        body.prism(cx, cy, z, z + height, r0, r1, 8)
+        body.prism(cx, cy, z, z + tier_h, r0, r1, 8)
         body.build(f"pagoda_body_{i}", MAT_BRICK, root)
-
+        # 出檐
         eave = Builder()
-        eave.prism(cx, cy, z + height - 0.6, z + height + 0.25, r1 * 1.5, r1 * 1.18, 8)
+        eave.prism(cx, cy, z + tier_h - 0.5, z + tier_h + 0.25, r1 * 1.5, r1 * 1.15, 8)
         eave.build(f"pagoda_eave_{i}", MAT_TILE, root)
-        z += height
+        z += tier_h
 
     # 塔刹
     spire = Builder()
-    spire.prism(cx, cy, z, z + 1.0, 1.5, 1.3, 8)
-    spire.prism(cx, cy, z + 1.0, z + 7.6, 1.1, 0.12, 8)
-    for k in range(4):
-        zz = z + 1.8 + k * 1.2
-        spire.prism(cx, cy, zz, zz + 0.24, 1.05 - k * 0.15, 1.05 - k * 0.15, 8)
+    spire.prism(cx, cy, z, z + 1.0, 1.4, 1.2, 8)
+    spire.prism(cx, cy, z + 1.0, z + 3.0, 0.9, 0.1, 8)
     spire.build("pagoda_spire", MAT_TILE, root)
 
 
-pagoda(58.0, 112.0)
+# 瑞光塔在城墙北侧（城内）约 150m、偏东
+pagoda(58.0, 150.0)
 
 
 # ---------------------------------------------------------------- 吴门桥
 
-
 def arch_bridge(cx, cy, span, width, rise, band):
-    """单孔石拱桥：拱带沿 y 方向拉伸。"""
+    """单孔石拱桥：拱沿 y 方向（南北走向），cx 为桥中心 x，cy 为桥中心 y。
+
+    拱形沿 y 方向拉伸（span 沿 y），宽度沿 x（width）。
+    桥两端带引桥坡道，桥面自拱顶向两端落到地面。
+    """
     b = Builder()
-    steps = 26
+    steps = 30
     half = span / 2
     top = []
     bot = []
     for k in range(steps + 1):
-        x = -half + span * k / steps
-        t = x / half
-        zt = rise * (1 - t * t)
-        zb = max(0.0, (rise - band) * (1 - t * t))
-        top.append((cx + x, zt))
-        bot.append((cx + x, zb))
+        y = -half + span * k / steps
+        t = y / half
+        zt = rise * (1 - t * t)  # 桥面拱形（最高在中间）
+        zb = max(0.0, (rise - band) * (1 - t * t))  # 拱腹
+        top.append((y, zt))
+        bot.append((y, zb))
 
     for k in range(steps):
-        x0, zt0 = top[k]
-        x1, zt1 = top[k + 1]
+        y0, zt0 = top[k]
+        y1, zt1 = top[k + 1]
         _, zb0 = bot[k]
         _, zb1 = bot[k + 1]
-        # 两个侧面
-        b.quad((x0, cy - width / 2, zb0), (x1, cy - width / 2, zb1), (x1, cy - width / 2, zt1), (x0, cy - width / 2, zt0))
-        b.quad((x0, cy + width / 2, zb0), (x1, cy + width / 2, zb1), (x1, cy + width / 2, zt1), (x0, cy + width / 2, zt0))
-        # 桥面与拱腹
-        b.quad((x0, cy - width / 2, zt0), (x1, cy - width / 2, zt1), (x1, cy + width / 2, zt1), (x0, cy + width / 2, zt0))
-        b.quad((x0, cy - width / 2, zb0), (x1, cy - width / 2, zb1), (x1, cy + width / 2, zb1), (x0, cy + width / 2, zb0))
+        # 两个侧面（沿 x 方向的两侧）
+        b.quad((cx - width / 2, cy + y0, zb0), (cx - width / 2, cy + y1, zb1),
+               (cx - width / 2, cy + y1, zt1), (cx - width / 2, cy + y0, zt0))
+        b.quad((cx + width / 2, cy + y0, zb0), (cx + width / 2, cy + y1, zb1),
+               (cx + width / 2, cy + y1, zt1), (cx + width / 2, cy + y0, zt0))
+        # 桥面（顶）与拱腹（底）
+        b.quad((cx - width / 2, cy + y0, zt0), (cx - width / 2, cy + y1, zt1),
+               (cx + width / 2, cy + y1, zt1), (cx + width / 2, cy + y0, zt0))
+        b.quad((cx - width / 2, cy + y0, zb0), (cx - width / 2, cy + y1, zb1),
+               (cx + width / 2, cy + y1, zb1), (cx + width / 2, cy + y0, zb0))
 
     # 两端封口
-    x0, zt0 = top[0]
-    b.quad((x0, cy - width / 2, 0.0), (x0, cy + width / 2, 0.0), (x0, cy + width / 2, zt0), (x0, cy - width / 2, zt0))
-    x1, zt1 = top[-1]
-    b.quad((x1, cy - width / 2, 0.0), (x1, cy + width / 2, 0.0), (x1, cy + width / 2, zt1), (x1, cy - width / 2, zt1))
+    y0, zt0 = top[0]
+    b.quad((cx - width / 2, cy + y0, 0.0), (cx + width / 2, cy + y0, 0.0),
+           (cx + width / 2, cy + y0, zt0), (cx - width / 2, cy + y0, zt0))
+    y1, zt1 = top[-1]
+    b.quad((cx - width / 2, cy + y1, 0.0), (cx + width / 2, cy + y1, 0.0),
+           (cx + width / 2, cy + y1, zt1), (cx - width / 2, cy + y1, zt1))
     return b
 
 
-# 吴门桥跨护城河，桥身与城墙垂直（旋转 90° 复用沿 X 生成的拱桥）
-BRIDGE_CX, BRIDGE_CY = 13.0, -26.0
-BRIDGE_SPAN, BRIDGE_WIDTH, BRIDGE_RISE = 56.0, 6.6, 9.0
+# 吴门桥：单孔，全长 66.3m、宽 4.8m、拱跨（span 沿 y）取桥身弧长、矢高 9m。
+# 桥中心在城墙南侧 66m（护城河中心），沿 Y（南北）走向。
+BRIDGE_CX = 13.0
+BRIDGE_CY = -66.0
+BRIDGE_SPAN = 66.0
+BRIDGE_WIDTH = 4.8
+BRIDGE_RISE = 9.0
 
 bridge = arch_bridge(BRIDGE_CX, BRIDGE_CY, BRIDGE_SPAN, BRIDGE_WIDTH, BRIDGE_RISE, 4.2)
-bridge.build("wumen_bridge", MAT_BRIDGE, root, rot=math.pi / 2, pivot=(BRIDGE_CX, BRIDGE_CY))
+bridge.build("wumen_bridge", MAT_BRIDGE, root)
 
-# 桥栏：与桥面同拱度，随桥一起旋转
-rail = Builder()
-steps = 26
-half = BRIDGE_SPAN / 2
-for side in (-1, 1):
-    yy = BRIDGE_CY + side * (BRIDGE_WIDTH / 2 - 0.3)
-    for k in range(steps):
-        x0 = BRIDGE_CX - half + BRIDGE_SPAN * k / steps
-        x1 = BRIDGE_CX - half + BRIDGE_SPAN * (k + 1) / steps
-        t0 = (x0 - BRIDGE_CX) / half
-        t1 = (x1 - BRIDGE_CX) / half
-        z0 = BRIDGE_RISE * (1 - t0 * t0)
-        z1 = BRIDGE_RISE * (1 - t1 * t1)
-        rail.quad((x0, yy - 0.2, z0), (x1, yy - 0.2, z1), (x1, yy - 0.2, z1 + 1.0), (x0, yy - 0.2, z0 + 1.0))
-        rail.quad((x0, yy + 0.2, z0), (x1, yy + 0.2, z1), (x1, yy + 0.2, z1 + 1.0), (x0, yy + 0.2, z0 + 1.0))
-        rail.quad((x0, yy - 0.2, z0 + 1.0), (x1, yy - 0.2, z1 + 1.0), (x1, yy + 0.2, z1 + 1.0), (x0, yy + 0.2, z0 + 1.0))
-rail.build("bridge_rail", MAT_BRIDGE, root, rot=math.pi / 2, pivot=(BRIDGE_CX, BRIDGE_CY))
+# 桥栏：与桥面同拱度
+def bridge_rail(cx, cy, span, width, rise):
+    b = Builder()
+    steps = 30
+    half = span / 2
+    for side in (-1, 1):
+        xx = cx + side * (width / 2 - 0.15)
+        for k in range(steps):
+            y0 = cy - half + span * k / steps
+            y1 = cy - half + span * (k + 1) / steps
+            t0 = (y0 - cy) / half
+            t1 = (y1 - cy) / half
+            z0 = rise * (1 - t0 * t0)
+            z1 = rise * (1 - t1 * t1)
+            b.quad((xx - 0.15, y0, z0), (xx - 0.15, y1, z1), (xx - 0.15, y1, z1 + 0.9), (xx - 0.15, y0, z0 + 0.9))
+            b.quad((xx + 0.15, y0, z0), (xx + 0.15, y1, z1), (xx + 0.15, y1, z1 + 0.9), (xx + 0.15, y0, z0 + 0.9))
+            b.quad((xx - 0.15, y0, z0 + 0.9), (xx - 0.15, y1, z1 + 0.9), (xx + 0.15, y1, z1 + 0.9), (xx + 0.15, y0, z0 + 0.9))
+    return b.build("bridge_rail", MAT_BRIDGE, root)
+
+
+bridge_rail(BRIDGE_CX, BRIDGE_CY, BRIDGE_SPAN, BRIDGE_WIDTH, BRIDGE_RISE)
 
 
 # ---------------------------------------------------------------- 合并输出

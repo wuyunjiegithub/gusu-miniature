@@ -4,9 +4,10 @@ import { useRoads } from '../hooks/useRoads';
 import { useBuildings } from '../hooks/useBuildings';
 import { useSandTable } from '../store/useSandTable';
 import { sceneGeometry } from '../data/sceneGeometry';
+import { pointInRing } from '../utils/geo';
+import { inWater as inWaterField } from '../utils/waterField';
 import { buildOuterCity, OUTER_GROUND_Y } from '../data/outerCity';
 import type { RoadLines } from '../data/outerCity';
-import { pointInRing } from '../utils/geo';
 import type { LocalPoint2 } from '../types';
 
 /** 路灯间距（米） */
@@ -96,6 +97,18 @@ const hash = (v: number): number => {
   const t = Math.sin(v * 12.9898 + 78.233) * 43758.5453;
   return t - Math.floor(t);
 };
+
+/* ---------------- 水面剔除 ----------------
+ * 路灯是沿主干道法向偏移撒点的，路一旦贴着河岸走，偏移 7.5m / 16.6m 的灯杆
+ * 就正好插进护城河或城内河道里——夜里看上去就是"河里冒出一根灯柱"。
+ * 撒点前先测一次水面，落在水里就翻到路另一侧，两侧都进水就不放。
+ */
+/**
+ * 该点是否落在水面上。
+ * margin 给灯杆留出安全距离：灯是立在岸上的，脚离水面太近也算不合格。
+ * 判定统一走 utils/waterField 的网格索引，不在这里重复实现一遍折线距离。
+ */
+const inWater = (x: number, z: number, margin = 3): boolean => inWaterField(x, z, margin);
 
 /**
  * 水面灯影：沿河道/护城河按固定间距铺贴细长暖色光斑，
@@ -329,10 +342,14 @@ function buildOuterNightGlow(roads: RoadLines | null): {
       let flip = 1;
       while (t <= len) {
         const f = t / len;
-        const px = x0 + dx * f + nx * side * flip;
-        const pz = z0 + dz * f + nz * side * flip;
-        if (Math.hypot(px, pz) > 3100) {
-          lampPos.push(px, OUTER_GROUND_Y + 7.5, pz);
+        // 先试当前侧，进水就翻到另一侧；两侧都进水这盏不放
+        const cand: Array<[number, number]> = [
+          [x0 + dx * f + nx * side * flip, z0 + dz * f + nz * side * flip],
+          [x0 + dx * f - nx * side * flip, z0 + dz * f - nz * side * flip],
+        ];
+        const spot = cand.find(([px, pz]) => !inWater(px, pz, 4));
+        if (spot && Math.hypot(spot[0], spot[1]) > 3100) {
+          lampPos.push(spot[0], OUTER_GROUND_Y + 7.5, spot[1]);
           lampColor.push(1.0, 0.79, 0.48);
         }
         flip = -flip;
@@ -365,6 +382,10 @@ export function NightLights() {
   const roads = useRoads();
   const buildings = useBuildings();
   const night = useSandTable((state) => state.time === 'night');
+  // LOD：全景（L0）下河面灯影与灯笼外层柔光都是亚像素级细节，
+  // 关掉省一档透明叠加；中景/近景（L1/L2）保留完整夜景层次（FR-11）
+  const lod = useSandTable((state) => state.lod);
+  const detail = lod !== 'L0';
 
   const poleRef = useRef<THREE.InstancedMesh>(null);
   const bulbRef = useRef<THREE.InstancedMesh>(null);
@@ -384,14 +405,31 @@ export function NightLights() {
         if (Math.hypot(mid[0], mid[1]) > 3300) continue;
         const start = lamps.length;
         sampleLine(line, LAMP_SPACING, lamps, MAX_LAMPS);
-        // 灯杆退到路缘，避免立在主干道正中间
+        // 灯杆退到路缘，避免立在主干道正中间；
+        // 靠水一侧会让灯杆站进河里，这时翻到路的另一侧，两侧都进水就不要这盏
         for (let i = start; i < lamps.length; i += 1) {
-          lamps[i].x += lamps[i].nx * 7.5;
-          lamps[i].z += lamps[i].nz * 7.5;
+          const spot = lamps[i];
+          const ax = spot.x + spot.nx * 7.5;
+          const az = spot.z + spot.nz * 7.5;
+          if (!inWater(ax, az)) {
+            spot.x = ax;
+            spot.z = az;
+          } else {
+            const bx = spot.x - spot.nx * 7.5;
+            const bz = spot.z - spot.nz * 7.5;
+            if (!inWater(bx, bz)) {
+              spot.x = bx;
+              spot.z = bz;
+            } else {
+              spot.x = NaN;
+            }
+          }
         }
       }
     }
-    const innerLamps = lamps.filter((s) => Math.hypot(s.x, s.z) < 3100);
+    // 剔除两侧都是水的路灯
+    const lampsOnLand = lamps.filter((s) => Number.isFinite(s.x));
+    const innerLamps = lampsOnLand.filter((s) => Math.hypot(s.x, s.z) < 3100);
 
     // 红灯笼挂到民居屋檐下：从已测绘的坡顶建筑中按确定性概率抽样
     if (buildings) {
@@ -586,7 +624,7 @@ export function NightLights() {
         />
       </points>
       {/* 灯笼外层柔光：增强夜间光晕层次 */}
-      <points geometry={glowGeos.lantern} frustumCulled={false}>
+      <points geometry={glowGeos.lantern} frustumCulled={false} visible={detail}>
         <pointsMaterial
           map={glowTexture}
           color="#ff8a4a"
@@ -599,7 +637,7 @@ export function NightLights() {
         />
       </points>
       {/* 河面灯影：贴在水面上的细长暖色光斑 */}
-      <mesh geometry={reflectionGeo} renderOrder={2} frustumCulled={false}>
+      <mesh geometry={reflectionGeo} renderOrder={2} frustumCulled={false} visible={detail}>
         <meshBasicMaterial
           map={glowTexture}
           color="#ffab63"

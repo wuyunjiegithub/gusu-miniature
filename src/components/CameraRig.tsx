@@ -38,10 +38,13 @@ export function CameraRig() {
   const camera = useThree((state) => state.camera);
   const controls = useThree((state) => state.controls) as unknown as ControlsLike | null;
   const selectedId = useSandTable((state) => state.selectedId);
+  const tourActive = useSandTable((state) => state.tour.active);
   const animRef = useRef<CameraAnim | null>(null);
 
   useEffect(() => {
     if (!controls) return;
+    // 整体漫游期间由 TourController 独占相机写入，聚焦逻辑让位
+    if (tourActive) return;
     // 带 cam 参数时是截图复核机位，别让"回到全景"的进场动画把它推开
     if (DEBUG_VIEW) return;
 
@@ -101,7 +104,7 @@ export function CameraRig() {
       animRef.current = null;
       controls.enabled = true;
     };
-  }, [selectedId, camera, controls]);
+  }, [selectedId, camera, controls, tourActive]);
 
   useFrame((_, delta) => {
     const anim = animRef.current;
@@ -150,14 +153,37 @@ export function DebugCamera() {
   const camera = useThree((state) => state.camera);
   const controls = useThree((state) => state.controls) as unknown as ControlsLike | null;
 
-  useEffect(() => {
-    if (!DEBUG_VIEW || !controls) return;
+  // 用 useFrame 每帧强制落位：OrbitControls 的 damping 会在下一帧把相机
+  // 按 target+offset 重算，单次 useEffect 设完就被拉回全景。每帧重设才能
+  // 让截图复核机位稳定下来。
+  // controls 可能因渲染顺序拿不到（makeDefault 注册晚于本组件），
+  // 所以相机朝向直接 lookAt 一个固定目标点，不依赖 controls。
+  useFrame(() => {
+    if (!DEBUG_VIEW) return;
     const { cam, target } = DEBUG_VIEW;
+    // 关掉阻尼并禁用交互。注意：这里绝不能调用 controls.update()——
+    // OrbitControls 会用内部残留的球坐标(半径/角度)把刚设好的相机重算回全景。
+    // 只要 set position + lookAt，让本帧渲染直接用这个机位即可。
+    if (controls) {
+      controls.enabled = false;
+      (controls as unknown as { enableDamping: boolean }).enableDamping = false;
+      if (target) controls.target.set(target[0], target[1], target[2]);
+    }
     camera.position.set(cam[0], cam[1], cam[2]);
-    if (target) controls.target.set(target[0], target[1], target[2]);
-    camera.lookAt(controls.target);
-    controls.update();
-  }, [camera, controls]);
+    camera.lookAt(
+      target ? target[0] : 0,
+      target ? target[1] : 0,
+      target ? target[2] : 0,
+    );
+    camera.updateMatrixWorld();
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__cam = {
+        x: camera.position.x,
+        y: camera.position.y,
+        z: camera.position.z,
+      };
+    }
+  });
 
   return null;
 }

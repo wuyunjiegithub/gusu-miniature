@@ -6,7 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "data:fetch": "node scripts/rebuild-all.mjs fetch",
+    "data:build": "node scripts/rebuild-all.mjs build",
+    "data:qa": "node scripts/rebuild-all.mjs qa",
+    "data:all": "node scripts/rebuild-all.mjs all",
+    "data:footprints": "vite-node scripts/build-heritage-footprints.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "qa:model-road": "node scripts/qa-model-road.mjs",
+    "qa:water-road": "vite-node scripts/qa-water-road.ts"
   },
   "dependencies": {
     "@react-three/drei": "^9.114.3",
@@ -23,8 +33,10 @@
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.169.0",
     "@vitejs/plugin-react": "^4.3.2",
+    "puppeteer-core": "^23.11.1",
     "sharp": "^0.35.5",
     "typescript": "^5.6.3",
-    "vite": "^5.4.8"
+    "vite": "^5.4.8",
+    "vitest": "^2.1.9"
   }
 }

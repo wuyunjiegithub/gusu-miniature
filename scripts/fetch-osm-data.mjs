@@ -4,7 +4,7 @@
  * 特性：逐查询落盘、断点续传（已存在的文件自动跳过）
  * 用法: node scripts/fetch-osm-data.mjs
  */
-import { mkdir, writeFile, access } from 'node:fs/promises';
+import { mkdir, writeFile, access, readFile } from 'node:fs/promises';
 import { overpassQuery } from './lib/overpass.mjs';
 
 const RAW_DIR = new URL('../data/raw/', import.meta.url);
@@ -69,5 +69,40 @@ await fetchTo(
   'hanshan.json',
   '[out:json][timeout:25];nwr["name"~"寒山寺"](31.300,120.560,31.330,120.590);out geom tags;',
 );
+
+/** 5. 合并 4 个水系分块 → waterways.json
+ *  build-scene-data.mjs 优先读这个合并文件；历史上它来源不明（无脚本产出），
+ *  从零复现时会缺失并静默回退到分块。这里显式产出，闭合链路。
+ *
+ *  幂等策略：若合并文件已存在，只有当它比"4 分块合并结果"要素更少时才覆盖。
+ *  这样从零复现能生成该文件，而重跑不会用分块版本破坏一份可能更完整的既有文件
+ *  （历史上手工合并版曾含分块抓取边界外的 1 个额外几何点）。 */
+const waterTiles = ['waterways-sw.json', 'waterways-se.json', 'waterways-nw.json', 'waterways-ne.json'];
+const seen = new Map();
+for (const name of waterTiles) {
+  const json = JSON.parse(await readFile(new URL(name, RAW_DIR), 'utf8'));
+  for (const el of json.elements ?? []) {
+    if (el.type !== 'way' || !el.geometry) continue;
+    // 同一 way 落在多个分块边缘被重复抓取：保留几何点最全的版本，
+    // 使合并结果对分块读取顺序不敏感。
+    const prev = seen.get(el.id);
+    if (!prev || (el.geometry?.length ?? 0) > (prev.geometry?.length ?? 0)) seen.set(el.id, el);
+  }
+}
+const merged = { elements: [...seen.values()] };
+const mergedFile = new URL('waterways.json', RAW_DIR);
+if (await exists(mergedFile)) {
+  const current = JSON.parse(await readFile(mergedFile, 'utf8'));
+  const curCount = current.elements?.length ?? 0;
+  if (curCount >= merged.elements.length) {
+    console.log(`[merge] waterways.json 已存在且更完整 (${curCount} ≥ ${merged.elements.length})，保留`);
+  } else {
+    await writeFile(mergedFile, JSON.stringify(merged));
+    console.log(`[merge] waterways.json 覆盖为 4 分块合并 (${merged.elements.length} ways)`);
+  }
+} else {
+  await writeFile(mergedFile, JSON.stringify(merged));
+  console.log(`[merge] waterways.json ← 4 分块新建 (${merged.elements.length} ways)`);
+}
 
 console.log('\n抓取完成。下一步: node scripts/build-scene-data.mjs');

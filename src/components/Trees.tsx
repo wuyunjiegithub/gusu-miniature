@@ -28,31 +28,9 @@ const MAX_SCATTER_TREES = 8000;
  * 成组出现（一格 1–2 棵）更像林地而不是行道树。
  */
 const SCATTER_STEP = 68;
-/** 道路落格边长：树点落在这个格子里就认为压在马路上 */
-const ROAD_CELL = 26;
 
-function buildRoadCellSet(lines: LocalPoint2[][]): Set<string> {
-  const cells = new Set<string>();
-  for (const line of lines) {
-    for (let i = 0; i < line.length - 1; i += 1) {
-      const [x0, z0] = line[i];
-      const [x1, z1] = line[i + 1];
-      const len = Math.hypot(x1 - x0, z1 - z0);
-      const steps = Math.max(1, Math.ceil(len / 12));
-      for (let s = 0; s <= steps; s += 1) {
-        const t = s / steps;
-        cells.add(
-          `${Math.round((x0 + (x1 - x0) * t) / ROAD_CELL)},${Math.round((z0 + (z1 - z0) * t) / ROAD_CELL)}`,
-        );
-      }
-    }
-  }
-  return cells;
-}
-
-function scatterOuterWoods(roads: RoadsData, grids: (FootprintGrid | null)[]): TreeTransform[] {
+function scatterOuterWoods(roadIndex: RoadIndex, grids: (FootprintGrid | null)[]): TreeTransform[] {
   const trees: TreeTransform[] = [];
-  const cells = buildRoadCellSet([...roads.major, ...roads.minor]);
   let seed = 910000;
 
   for (let gx = -WORLD_LIMIT; gx <= WORLD_LIMIT; gx += SCATTER_STEP) {
@@ -69,14 +47,17 @@ function scatterOuterWoods(roads: RoadsData, grids: (FootprintGrid | null)[]): T
       if (distanceToSegments(OUTER_WATER_SEGMENTS, x, z) < 26) continue;
       if (HILL_FOOTPRINTS.some((h) => Math.hypot(x - h.x, z - h.z) < h.r * 1.06)) continue;
       if (insideLandmark(x, z, 10)) continue;
-      if (cells.has(`${Math.round(x / ROAD_CELL)},${Math.round(z / ROAD_CELL)}`)) continue;
+      if (onAnyRoad(x, z, roadIndex, 1.5)) continue;
       if (anyBlocked(grids, x, z, 4)) continue;
 
       const n = hash(seed + 91) > 0.62 ? 2 : 1;
       for (let k = 0; k < n; k += 1) {
+        const tx = x + (hash(seed + 11 + k) - 0.5) * 26;
+        const tz = z + (hash(seed + 23 + k) - 0.5) * 26;
+        if (onAnyRoad(tx, tz, roadIndex, 1.5)) continue;
         trees.push({
-          x: x + (hash(seed + 11 + k) - 0.5) * 26,
-          z: z + (hash(seed + 23 + k) - 0.5) * 26,
+          x: tx,
+          z: tz,
           y: OUTER_TREE_Y,
           trunkH: 5.4 + hash(seed + 31 + k) * 3.4,
           crownR: 3.6 + hash(seed + 37 + k) * 2.8,
@@ -103,6 +84,9 @@ const WALL_CLEARANCE = 13;
 const MOAT_OUTER = 132;
 /** 城外地面高度 */
 const OUTER_TREE_Y = -2;
+
+/** 盘门水门水道 x（与 WaterSystem.PANMEN_GATE.x、sceneGeometry.trimPanmenGate 一致） */
+const PANMEN_GATE_X = -777;
 
 const hash = (i: number): number => {
   const v = Math.sin(i * 91.17 + 47.3) * 43758.5453;
@@ -272,6 +256,70 @@ function distanceToSegments(segments: WaterSegment[], x: number, z: number): num
   return Math.sqrt(best);
 }
 
+/**
+ * 车行道路面索引：树干绝不能站在路面上。
+ * 每条折线段带真实半宽（主 13m / 次 5.5m，与 Roads.tsx 的 MAJOR_WIDTH/MINOR_WIDTH 一致），
+ * 用网格加速查询，避免逐树遍历上万条路段。
+ */
+interface RoadSegment extends WaterSegment {
+  half: number;
+}
+interface RoadIndex {
+  segs: RoadSegment[];
+  grid: Map<string, number[]>;
+}
+const ROAD_CELL = 60;
+const roadKey = (cx: number, cz: number) => `${cx},${cz}`;
+
+function buildRoadIndex(roads: RoadsData): RoadIndex {
+  const segs: RoadSegment[] = [];
+  const grid = new Map<string, number[]>();
+  for (const [kind, half] of [['major', 13], ['minor', 5.5]] as const) {
+    for (const line of roads[kind]) {
+      for (let i = 0; i < line.length - 1; i += 1) {
+        const [x1, z1] = line[i];
+        const [x2, z2] = line[i + 1];
+        const dx = x2 - x1;
+        const dz = z2 - z1;
+        const seg: RoadSegment = { x1, z1, dx, dz, l2: dx * dx + dz * dz, half };
+        const id = segs.length;
+        segs.push(seg);
+        for (let cx = Math.floor(Math.min(x1, x2) / ROAD_CELL); cx <= Math.floor(Math.max(x1, x2) / ROAD_CELL); cx += 1) {
+          for (let cz = Math.floor(Math.min(z1, z2) / ROAD_CELL); cz <= Math.floor(Math.max(z1, z2) / ROAD_CELL); cz += 1) {
+            const k = roadKey(cx, cz);
+            let arr = grid.get(k);
+            if (!arr) grid.set(k, (arr = []));
+            arr.push(id);
+          }
+        }
+      }
+    }
+  }
+  return { segs, grid };
+}
+
+/** 点是否压在任意一条车行道路面上。margin = 树干半径外的额外缓冲（默认 1m）。 */
+function onAnyRoad(x: number, z: number, index: RoadIndex, margin = 1): boolean {
+  const cx = Math.floor(x / ROAD_CELL);
+  const cz = Math.floor(z / ROAD_CELL);
+  // 3×3 邻域格边长 180m，远大于最大路面半宽 13m，不会漏判
+  for (let ix = cx - 1; ix <= cx + 1; ix += 1) {
+    for (let iz = cz - 1; iz <= cz + 1; iz += 1) {
+      const arr = index.grid.get(roadKey(ix, iz));
+      if (!arr) continue;
+      for (const id of arr) {
+        const seg = index.segs[id];
+        const t = seg.l2 > 0 ? Math.min(1, Math.max(0, ((x - seg.x1) * seg.dx + (z - seg.z1) * seg.dz) / seg.l2)) : 0;
+        const px = seg.x1 + seg.dx * t - x;
+        const pz = seg.z1 + seg.dz * t - z;
+        const limit = seg.half + margin;
+        if (px * px + pz * pz < limit * limit) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** 山体在场景中的平面位置与占地半径（山上不种行道树，否则树会埋进山里） */
 const HILL_FOOTPRINTS = HILLS.map((hill) => {
   const v = lonLatToVector3(hill.lon, hill.lat, 0);
@@ -334,12 +382,26 @@ function isMoatLine(line: LocalPoint2[]): boolean {
   return line.every(([x, z]) => distanceToSegments(WALL_SEGMENTS, x, z) < 12);
 }
 
+/** 盘门水门水道：x=-766 的南北向短线，两端 z 都在 2200~2500 之间 */
+function isPanmenGateLine(line: LocalPoint2[]): boolean {
+  if (line.length !== 2) return false;
+  const [a, b] = line;
+  return (
+    Math.abs(a[0] - PANMEN_GATE_X) < 4 &&
+    Math.abs(b[0] - PANMEN_GATE_X) < 4 &&
+    a[1] > 2000 &&
+    b[1] > 2000
+  );
+}
+
 /** 河道两侧行道树：沿折线每 30m 取点，落在驳岸压顶之外 */
-function alongWaterways(): TreeTransform[] {
+function alongWaterways(roadIndex: RoadIndex): TreeTransform[] {
   const trees: TreeTransform[] = [];
   let seed = 0;
   for (const line of sceneGeometry.waterways) {
     const moat = isMoatLine(line);
+    // 盘门水门水道：两侧是城墙/水门/景区，不种行道树，否则南端会种进护城河水面
+    if (isPanmenGateLine(line)) continue;
     for (let i = 0; i < line.length - 1; i += 1) {
       const [x1, z1] = line[i];
       const [x2, z2] = line[i + 1];
@@ -361,6 +423,8 @@ function alongWaterways(): TreeTransform[] {
           if (moat && pointInRing(sceneGeometry.cityOutline, x, z)) continue;
           if (insideLandmark(x, z, 4)) continue;
           if (distanceToSegments(WALL_SEGMENTS, x, z) < WALL_CLEARANCE) continue;
+          // 河岸树也不能站到沿河/跨河的马路路面上
+          if (onAnyRoad(x, z, roadIndex, 1.2)) continue;
           trees.push({
             x,
             z,
@@ -381,7 +445,7 @@ function alongWaterways(): TreeTransform[] {
  * 街巷行道树：沿主/次干道两侧种植，遇建筑让位、遇河道避让。
  * 这是"江南绿城"观感的关键——城内原本几乎没有植被。
  */
-function alongStreets(roads: RoadsData, grid: FootprintGrid): TreeTransform[] {
+function alongStreets(roads: RoadsData, grid: FootprintGrid, roadIndex: RoadIndex): TreeTransform[] {
   const trees: TreeTransform[] = [];
   const nets: { lines: LocalPoint2[][]; half: number; spacing: number }[] = [
     { lines: roads.minor, half: 5.5, spacing: 22 },
@@ -415,6 +479,8 @@ function alongStreets(roads: RoadsData, grid: FootprintGrid): TreeTransform[] {
               if (nearWater(x, z, WATER_MARGIN)) continue;
               if (insideLandmark(x, z, 5)) continue;
               if (distanceToSegments(WALL_SEGMENTS, x, z) < WALL_CLEARANCE) continue;
+              // A 路的树不能落到交叉的 B 路路面上：按全路网真实半宽判定
+              if (onAnyRoad(x, z, roadIndex, 1.2)) continue;
               trees.push({
                 x,
                 z,
@@ -439,7 +505,7 @@ function alongStreets(roads: RoadsData, grid: FootprintGrid): TreeTransform[] {
  * 让 3–5.8km 的城郊不只是屋顶与马路，而是有连续的林荫；
  * 河里、园林里、山体上都不种，避免穿模。
  */
-function alongOuterRoads(roads: RoadsData, grids: (FootprintGrid | null)[]): TreeTransform[] {
+function alongOuterRoads(roads: RoadsData, grids: (FootprintGrid | null)[], roadIndex: RoadIndex): TreeTransform[] {
   const trees: TreeTransform[] = [];
   const nets = [
     { lines: roads.major, half: 13, spacing: 50, offsets: [18, 25] },
@@ -482,6 +548,9 @@ function alongOuterRoads(roads: RoadsData, grids: (FootprintGrid | null)[]): Tre
               if (distanceToSegments(WALL_SEGMENTS, x, z) < MOAT_OUTER) continue;
               if (distanceToSegments(OUTER_WATER_SEGMENTS, x, z) < 22) continue;
               if (insideLandmark(x, z, 8)) continue;
+              // 不落到任何一条马路（含交叉路）上：按真实半宽判定，
+              // 旧实现用固定 9m，小于主干道半宽 13m，导致树长进路面。
+              if (onAnyRoad(x, z, roadIndex, 1.5)) continue;
               // 城外民居同样要避让，否则树干会从屋顶里长出来
               if (anyBlocked(grids, x, z, 2.2)) continue;
               trees.push({
@@ -520,15 +589,37 @@ export function Trees() {
   const roads = useRoads();
 
   const trees = useMemo(() => {
-    const waterside = alongWaterways();
+    const roadIndex = roads ? buildRoadIndex(roads) : null;
     const grid = buildings ? buildFootprintGrid(buildings) : null;
-    const streets = roads && grid ? alongStreets(roads, grid) : [];
     const blockGrid = roads ? buildOuterBlockGrid(roads) : null;
     const grids = [grid, blockGrid];
-    const outer = roads ? alongOuterRoads(roads, grids) : [];
-    const woods = roads ? scatterOuterWoods(roads, grids) : [];
-    return [...waterside, ...streets, ...outer, ...woods];
+    // 四类树统一用带真实半宽的路面索引避让：树干只在路两侧，不在路面上。
+    const waterside = roadIndex ? alongWaterways(roadIndex) : [];
+    const streets = roads && grid && roadIndex ? alongStreets(roads, grid, roadIndex) : [];
+    const outer = roads && roadIndex ? alongOuterRoads(roads, grids, roadIndex) : [];
+    const woods = roadIndex ? scatterOuterWoods(roadIndex, grids) : [];
+    const all = [...waterside, ...streets, ...outer, ...woods];
+    return all.filter((t) => {
+      // 兜底：任何生成函数漏掉的护城河水面树一律剔除。
+      // 护城河是城墙线外 4.6~124.6m 的环带（再加 3.2m 驳岸），
+      // 城外(cityOutline 之外)且离城墙线在 MOAT_OUTER+4 以内即落在河面里。
+      if (t.y <= -0.5 && !pointInRing(sceneGeometry.cityOutline, t.x, t.z)
+        && distanceToSegments(WALL_SEGMENTS, t.x, t.z) < MOAT_OUTER + 4) return false;
+      // 兜底：任何树都不得压在车行道路面上（含树干半径缓冲）
+      if (roadIndex && onAnyRoad(t.x, t.z, roadIndex, 1.2)) return false;
+      return true;
+    });
   }, [buildings, roads]);
+
+  // QA 探针：把最终树位暴露给 window，便于客观校验「树上路/树进水」为零。
+  // 仅 DEV 生效，生产构建无任何开销。
+  useLayoutEffect(() => {
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__treePositions = trees.map((t) => ({
+        x: t.x, z: t.z, y: t.y,
+      }));
+    }
+  }, [trees]);
 
   /**
    * 园林绿地已改由 Landmarks 的石台承担（台面铺草色）：

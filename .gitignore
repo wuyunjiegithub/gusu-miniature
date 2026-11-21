@@ -7,4 +7,9 @@ dist
 # 本地调试产物，不入库
 .screenshots/
 .trae-html-share-packages/
+.backup-data/
+.encrypted-backup/
+
+# WorkBuddy 会话数据（项目相关，保留在磁盘但不入库）
+.workbuddy/
 

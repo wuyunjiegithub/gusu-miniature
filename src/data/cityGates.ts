@@ -31,11 +31,17 @@ const TARGETS: { name: string; lon: number; lat: number; kind: GateKind }[] = [
   { name: '娄门', lon: 120.6428, lat: 31.3235, kind: 'rebuilt' },
   { name: '相门', lon: 120.6435, lat: 31.312, kind: 'rebuilt' },
   { name: '葑门', lon: 120.6363, lat: 31.2962, kind: 'rebuilt' },
-  { name: '盘门', lon: 120.6047, lat: 31.2912, kind: 'relic' },
+  { name: '盘门', lon: 120.6128, lat: 31.2888, kind: 'relic' },
 ];
 
 /** 城台沿墙半宽（两侧墙段在此留口） */
 export const GATE_HALF_WIDTH = 23;
+
+/**
+ * 盘门处的留口半长：盘门段城墙（含底下的水陆城门）由 Panmen.tsx 沿同一段
+ * 轮廓折线生成，程序化城墙在这里留出等长的大口，两者端点严格重合。
+ */
+export const PANMEN_GATE_GAP_HALF = 165;
 
 const ring = sceneGeometry.cityOutline;
 

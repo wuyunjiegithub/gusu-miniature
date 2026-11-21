@@ -45,6 +45,17 @@ export const CAMERA_LIMITS = {
   maxPolarAngle: Math.PI / 2 - 0.35,
 } as const;
 
+/**
+ * 城外水道半宽（米）。
+ * 外环水道顺序固定为 [山塘河, 上塘河]：
+ * 山塘河按山塘街精细模型的内河宽度（8m）绘制，保证模型水面与绘制水面完全重合；
+ * 其余水道仍按 26m 宽的运河绘制。
+ */
+export const SHANTANG_HALF = 4;
+export const SHANGTANG_HALF = 13;
+export const outerWaterHalf = (index: number): number =>
+  index === 0 ? SHANTANG_HALF : SHANGTANG_HALF;
+
 /** 全景默认机位（"返回全景"的目标状态），需覆盖 3.6km 城市范围 */
 export const PANORAMA_VIEW = {
   position: { x: 1500, y: 1100, z: 1500 },

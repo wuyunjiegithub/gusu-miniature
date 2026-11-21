@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { sceneGeometry } from '../data/sceneGeometry';
-import { CITY_GATES, GATE_HALF_WIDTH } from '../data/cityGates';
+import { CITY_GATES, GATE_HALF_WIDTH, PANMEN_GATE_GAP_HALF } from '../data/cityGates';
 import { useSandTable } from '../store/useSandTable';
 import { buildWallGeometry, splitClosedLine } from '../utils/wall';
 
@@ -26,7 +26,13 @@ export function CityWall() {
   const geometries = useMemo(() => {
     const runs = splitClosedLine(
       sceneGeometry.cityOutline,
-      CITY_GATES.map((g) => [g.sAlong - GATE_HALF_WIDTH, g.sAlong + GATE_HALF_WIDTH] as [number, number]),
+      CITY_GATES.map((g) => {
+        // 盘门：GLB 自带 318m 长的城墙段（含水陆城门），落在城墙线上；
+        // 程序化城墙要在盘门处留出等长的大口，由 GLB 城墙段填补，
+        // 否则两段墙重叠、或者城门处出现双层墙。其余城门仍留 46m 标准口。
+        const half = g.name === '盘门' ? PANMEN_GATE_GAP_HALF : GATE_HALF_WIDTH;
+        return [g.sAlong - half, g.sAlong + half] as [number, number];
+      }),
     );
     return runs.map((run) =>
       buildWallGeometry(run, WALL_THICKNESS, WALL_HEIGHT, WALL_BASE_Y, false),
@@ -48,8 +54,15 @@ export function CityWall() {
       for (let k = 0; k < steps; k += 1) {
         const t = k / steps;
         const along = s + len * t;
-        // 城门洞口处不放垛口
-        if (CITY_GATES.some((g) => Math.abs(along - g.sAlong) < GATE_HALF_WIDTH + 5)) continue;
+        // 城门洞口处不放垛口；盘门大口同样跳过（GLB 城墙自带垛口）
+        if (
+          CITY_GATES.some((g) => {
+            const half = g.name === '盘门' ? PANMEN_GATE_GAP_HALF : GATE_HALF_WIDTH;
+            return Math.abs(along - g.sAlong) < half + 5;
+          })
+        ) {
+          continue;
+        }
         items.push({ x: a[0] + dx * t, z: a[1] + dz * t, rot });
       }
       s += len;

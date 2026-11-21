@@ -153,10 +153,13 @@ float facadeGlow = 0.0;
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.82, 0.77), sill * 0.9 * detailFade);
       diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.7, lintel * detailFade);
 
-      // 积雪：墙面提亮，窗台挂雪
+      // 冬季墙面：苏州民居本来就是粉墙（#f4efe4 一档），和白屋顶并置会糊成一片雪。
+      // 雪后光照整体偏亮（环境光 0.5 + 白太阳 2.75），只压一档仍然过曝发白，
+      // 这里压到 0.35 左右：实测墙面落到中性灰（约 #8a8a8a），与积雪屋顶
+      // （约 #f0f0f0）拉开两档明度。只做乘法、不换成固定灰，各户色差仍保留。
       if (uFrost > 0.5) {
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.93, 0.95, 0.98), 0.28 * detailFade);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.97, 0.98, 1.0), sill * 0.6 * detailFade);
+        diffuseColor.rgb *= vec3(0.35, 0.36, 0.39);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88, 0.90, 0.93), sill * 0.5 * detailFade);
       }
 
       // 夜间点灯：约四成窗户亮暖光
@@ -293,17 +296,32 @@ export function BuildingField() {
     for (const uniform of frostUniformsRef.current) uniform.value = winter ? 1 : 0;
   }, [winter]);
 
-  /** 给自定义材质注入冬霜 uniform（简单材质整体提亮） */
+  /**
+   * 给自定义材质注入冬霜。
+   * 只让"朝上的面"挂霜：女儿墙的竖直侧板属于墙体，跟着变白一样会和雪糊成一片。
+   */
   const injectFrost = (mat: THREE.MeshStandardMaterial, strength: number) => {
     mat.onBeforeCompile = (shader) => {
       const uniform = { value: winterRef.current ? 1 : 0 };
       frostUniformsRef.current.push(uniform);
       shader.uniforms.uFrost = uniform;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying float vFrostUp;')
+        .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n  vFrostUp = objectNormal.y;');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform float uFrost;')
+        .replace(
+          '#include <common>',
+          '#include <common>\nuniform float uFrost;\nvarying float vFrostUp;',
+        )
         .replace(
           '#include <color_fragment>',
-          `#include <color_fragment>\n  if (uFrost > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.90, 0.93, 0.96), ${strength.toFixed(2)});`,
+          `#include <color_fragment>
+  if (uFrost > 0.5) {
+    // 立面压暗成冷灰（与墙面同一口径），只有朝上的面挂雪，避免整体变白
+    vec3 frostSide = diffuseColor.rgb * vec3(0.35, 0.36, 0.39);
+    float frostUp = smoothstep(0.3, 0.85, vFrostUp);
+    diffuseColor.rgb = mix(frostSide, vec3(0.88, 0.90, 0.93), frostUp * ${strength.toFixed(2)});
+  }`,
         );
     };
   };
@@ -351,7 +369,8 @@ export function BuildingField() {
 
   const slabMat = useMemo(() => {
     const slab = new THREE.MeshStandardMaterial({ roughness: 0.9 });
-    injectFrost(slab, 0.8);
+    // 0.8 会让平顶建筑的上半截整片发白（远处不衰减，最刺眼）；0.5 只够在顶面留一层薄雪
+    injectFrost(slab, 0.5);
     return slab;
   }, []);
 

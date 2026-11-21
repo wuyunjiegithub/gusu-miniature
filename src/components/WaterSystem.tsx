@@ -9,7 +9,8 @@ import { buildRibbons } from '../utils/ribbon';
 import { buildOutlineRing, buildRingBank } from '../utils/ring';
 import { createCityGroundTexture } from '../utils/cityGroundTexture';
 import { getSkyReflection } from '../utils/skyEnv';
-import { clipLinesToRadius } from '../utils/clip';
+import { clipLineToRadius } from '../utils/clip';
+import { outerWaterHalf } from '../constants/geo';
 
 /** 外围地面高度（城外基准面） */
 const GROUND_Y = -2;
@@ -27,20 +28,24 @@ const MOAT_BANK_WIDTH = 3.2;
 const CANAL_WIDTH = 30;
 const CANAL_Y = 2.4;
 
-/** 山塘河：与山塘街模型内河同高，水面低于街面约 1.2m */
-const SHANTANG_WIDTH = 26;
+/** 城外水道：与山塘街模型内河同高，水面低于街面约 1.2m */
 const SHANTANG_Y = -1.3;
 
 /**
- * 盘门水门：城内侧水面（2.4m）在城墙处断开，
- * 水门到护城河这一段单独按 1.78m 铺水面——正好压在盘门石台（1.6m）之上，
- * 吴门桥的拱券下因此有连续水面，并从水门一直通到护城河。
+ * 盘门水门：程序化重建的盘门（Panmen.tsx）水门洞在城墙局部 x=5，
+ * 城墙 group 定位 (-782.3, 2457.8) + 绕 Y 旋转 -7.64° 后，水门洞中心
+ * 约在世界 (-777, 2458.5)。城内侧水面在城墙处收口，穿过水门洞；
+ * 城外交给护城河（moatGeo）。
  */
 const PANMEN_GATE = {
-  x: -776,
-  z0: 2206,
-  z1: 2496,
-  width: 34,
+  /** 水门洞中心世界 x（城墙局部 x=5 经旋转/平移后） */
+  x: -777,
+  /** waterway#11（盘门水门水道）城内起点 z */
+  z0: 2240,
+  /** 城墙处收口 z（水门洞中心） */
+  z1: 2458.5,
+  /** 与水门洞宽（9.3m）一致，水面从门洞里过 */
+  width: 9,
   y: 1.78,
 };
 
@@ -133,28 +138,34 @@ export function WaterSystem() {
     [],
   );
   const canalGeo = useMemo(() => buildRibbons(cityWaterways, CANAL_WIDTH, CANAL_Y), [cityWaterways]);
-  const outerCanalGeo = useMemo(
+  // 每条城外水道按自己的半宽铺：山塘河 8m（与山塘街模型内河完全重合），其余 26m。
+  // 逐条建几何，避免裁剪后索引错位把 8m 宽度套到上塘河上。
+  const outerCanalGeos = useMemo(
     () =>
-      buildRibbons(
-        clipLinesToRadius(sceneGeometry.outerWaterways ?? [], GROUND_DISC_RADIUS - 40),
-        SHANTANG_WIDTH,
-        SHANTANG_Y,
-      ),
+      (sceneGeometry.outerWaterways ?? []).flatMap((line, i) => {
+        const clipped = clipLineToRadius(line, GROUND_DISC_RADIUS - 40);
+        if (clipped.length < 2) return [];
+        return [buildRibbons([clipped], outerWaterHalf(i) * 2, SHANTANG_Y)];
+      }),
     [],
   );
+  // 盘门水门：水面只铺到城墙线（水门），不再跟着 OSM 水道一路戳进护城河。
+  // 城墙外侧到吴门桥之间是护城河水面，交给 moatGeo 表达。
+  const gateEndZ = PANMEN_GATE.z1;
+
   const gateGeo = useMemo(
     () =>
       buildRibbons(
         [
           [
             [PANMEN_GATE.x, PANMEN_GATE.z0],
-            [PANMEN_GATE.x, PANMEN_GATE.z1],
+            [PANMEN_GATE.x, gateEndZ],
           ],
         ],
         PANMEN_GATE.width,
         PANMEN_GATE.y,
       ),
-    [],
+    [gateEndZ],
   );
 
   const groundTexture = useMemo(() => createCityGroundTexture(), []);
@@ -184,7 +195,7 @@ export function WaterSystem() {
   const surfaces: { key: string; geometry: THREE.BufferGeometry }[] = [
     { key: 'moat', geometry: moatGeo },
     { key: 'canal', geometry: canalGeo },
-    { key: 'shantang', geometry: outerCanalGeo },
+    ...outerCanalGeos.map((geometry, i) => ({ key: `outer-${i}`, geometry })),
     { key: 'gate', geometry: gateGeo },
   ];
 
@@ -203,7 +214,7 @@ export function WaterSystem() {
       </mesh>
 
       {surfaces.map((surface) => (
-        <mesh key={surface.key} geometry={surface.geometry}>
+        <mesh key={surface.key} name={`water-${surface.key}`} geometry={surface.geometry}>
           <meshStandardMaterial
             color={waterColor}
             roughness={roughness}
