@@ -6,7 +6,7 @@ const root = path.resolve(import.meta.dirname, '..');
 const roads = JSON.parse(fs.readFileSync(path.join(root, 'public/data/roads.json'), 'utf8'));
 const sg = JSON.parse(fs.readFileSync(path.join(root, 'src/data/scene-geometry.json'), 'utf8'));
 
-const CANAL_HALF = 15, CANAL_Y = 2.4;
+const CANAL_HALF = 6, CANAL_Y = 0.35;
 const MOAT_INNER = 4.6, MOAT_OUTER = MOAT_INNER + 120, MOAT_Y = 1.4;
 const SHANTANG_HALF = 4, SHANGTANG_HALF = 13, SHANTANG_Y = -1.3;
 const outerHalf = (i) => (i === 0 ? SHANTANG_HALF : SHANGTANG_HALF);

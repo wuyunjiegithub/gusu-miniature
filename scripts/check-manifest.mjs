@@ -74,7 +74,7 @@ const buildingCount =
 gate('建筑实例总数', buildingCount, { min: 22000, note: '基线≈23400（压路避让修复后）' });
 
 const roads = await j('public/data/roads.json');
-gate('主干路段数', roads.major?.length ?? 0, { min: 2200, note: '基线=2377（匝道归入支路档后）' });
+gate('主干路段数', roads.major?.length ?? 0, { min: 1600, note: '基线=1776；清理折返尖头/窄闭环/孤立碎段与双幅合并后约 1776' });
 gate('次干路段数', roads.minor?.length ?? 0, { min: 1500, note: '基线=1901（含立交匝道）' });
 
 const transit = await j('public/data/transit.json');

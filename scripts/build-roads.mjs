@@ -61,7 +61,7 @@ const HILLS = JSON.parse(await readFile(new URL('../src/data/hills.json', import
 
 const cityRing = sceneGeo.cityOutline;
 const cityRingClosed = [...cityRing, cityRing[0]];
-const CANAL_HALF = 15;
+const CANAL_HALF = 6;
 const MOAT_INNER = 4.6;
 const MOAT_OUTER = MOAT_INNER + 120;
 // 外环水道顺序 [山塘河, 上塘河]：山塘河按模型内河 8m 宽绘制，其余仍按 26m。
@@ -292,6 +292,21 @@ for (const name of tileNames) {
   }
 }
 
+/**
+ * 高架/立交桥面高度（米）：OSM `bridge=yes` 默认按 7m 高架，
+ * `layer` 越大越高（立交二层约 9.5m，三层约 12m）。
+ * 这类路不能和地面道路叠在同一平面上，运行时单独抬高渲染并补桥墩。
+ */
+const elevationOf = (way) => {
+  const tags = way.tags ?? {};
+  if (tags.tunnel && tags.tunnel !== 'no') return 0;
+  const layer = Number(tags.layer);
+  const isBridge = tags.bridge && tags.bridge !== 'no';
+  if (!isBridge && !(Number.isFinite(layer) && layer > 0)) return 0;
+  const level = Number.isFinite(layer) && layer > 0 ? layer : 1;
+  return Math.min(12, 4.5 + level * 2.5);
+};
+
 const major = [];
 const minor = [];
 let dropped = 0;
@@ -308,15 +323,18 @@ for (const way of wayById.values()) {
     continue;
   }
   const isMajor = MAJOR.has(kind);
+  const elev = elevationOf(way);
   const local = way.geometry.map((p) => toLocal(p.lon, p.lat));
   for (const boxed of clipPolyline(local, WORLD_LIMIT)) {
     for (const piece of clipToCircle(boxed, WORLD_LIMIT)) {
-      const simplified = simplify(piece, isMajor ? 2 : 3);
+      // 容差放到 2~3m 时，一条 26m 宽的路在简化拐点处会横向错开近 2m，
+      // 放大看就是"路忽粗忽细、边缘有台阶"。收紧到 1.2/1.6m 让边缘顺直。
+      const simplified = simplify(piece, isMajor ? 1.2 : 1.6);
       if (lengthOf(simplified) < 25) {
         dropped += 1;
         continue;
       }
-      (isMajor ? major : minor).push(simplified);
+      (isMajor ? major : minor).push(elev > 0 ? simplified.map((p) => ({ ...p, elev })) : simplified);
     }
   }
 }
@@ -439,6 +457,9 @@ const ringDistance = (x, z) => nearestOnPolyline(x, z, cityRingClosed)?.d ?? Inf
 
 const pushOutOfWater = (pts, roadHalf) => {
   if (pts.length < 2) return pts;
+  // 重采样会重建点对象，高架/桥梁高度要在这一步保住
+  const elev = pts.find((p) => p.elev)?.elev ?? 0;
+  const keepElev = (line) => (elev ? line.map((p) => ({ ...p, elev })) : line);
   // 顶点间距可能是 50~100m（simplify 过），先按 4m 重采样才能识别"沿河并行"
   const samples = [];
   for (let i = 0; i < pts.length - 1; i += 1) {
@@ -532,7 +553,7 @@ const pushOutOfWater = (pts, roadHalf) => {
     }
   }
 
-  return simplify(out, 2);
+  return keepElev(simplify(out, 2));
 };
 
 const splitLongWaterRuns = (pts) => {
@@ -560,8 +581,50 @@ const splitLongWaterRuns = (pts) => {
   return pieces.filter((p) => lengthOf(p) >= 25);
 };
 
+/**
+ * 过河段拉直：桥面上不应该有转弯。
+ * 短距离过河（≤60m，正常桥位）里如果还有折点，说明这条路在河面上拐了弯，
+ * 俯视就是"路在水上打了个折"。这里把落在水里的连续顶点整段去掉，
+ * 由两侧岸上的点直连——桥是直的，转弯发生在岸上。
+ */
+/** 与 WATER_RUN_LIMIT 一致：凡是保留下来的水中段都视为桥，桥上不应有折点 */
+const WATER_BRIDGE_LIMIT = WATER_RUN_LIMIT;
+
+const straightenWaterCrossings = (pts) => {
+  if (pts.length < 3) return pts;
+  const out = [pts[0]];
+  let i = 1;
+  let fixed = 0;
+  while (i < pts.length - 1) {
+    if (!inWater(pts[i].x, pts[i].z)) {
+      out.push(pts[i]);
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < pts.length && inWater(pts[j + 1].x, pts[j + 1].z)) j += 1;
+    const run = pts.slice(i, j + 1);
+    const terminal = j === pts.length - 1;
+    if (lengthOf(run) <= WATER_BRIDGE_LIMIT && (terminal || j + 1 < pts.length)) {
+      // 舍掉水中折点，直接连到下一处岸上点，形成直桥。
+      // 末端落在水里（另一端是岸上路口）时保留最后一个点，否则会把路口甩掉。
+      if (terminal) out.push(pts[j]);
+      fixed += 1;
+    } else {
+      for (const p of run) out.push(p);
+    }
+    i = j + 1;
+  }
+  const last = pts[pts.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  if (fixed > 0) return out;
+  return pts;
+};
+
 /* ---------------- 断头：接到最近的路 ---------------- */
 const SNAP_DIST = 80;
+/** 12m 以内直接移动端点，不补一段斜连线：补线会在路口多出一个折角 */
+const SNAP_MOVE = 12;
 const SNAP_CELL = 60;
 
 function buildSegmentIndex(lines) {
@@ -607,7 +670,10 @@ function nearestOnOthers(index, line, lineIndex, p, maxDist) {
         const qx = seg.a.x + t * dx;
         const qz = seg.a.z + t * dz;
         const d = Math.hypot(p.x - qx, p.z - qz);
-        if (d <= maxDist && (!best || d < best.d)) best = { x: qx, z: qz, d };
+        if (d <= maxDist && (!best || d < best.d)) {
+          const sl = Math.hypot(dx, dz) || 1;
+          best = { x: qx, z: qz, d, ux: dx / sl, uz: dz / sl };
+        }
       }
     }
   }
@@ -628,11 +694,27 @@ function stitch(lines) {
       const q = line[neighborPos];
       const near = nearestOnOthers(index, line, li, p, SNAP_DIST);
       if (!near) continue;
-      // 已经贴上了就不动；否则补一段短连线，让路口真正接上
-      if (near.d < 2.5) continue;
+      // 端点必须真正落到对侧中心线上：以前 2.5m 内就不动，
+      // 导致路口端头各偏一两米，端面之间露出方形缺口。
+      if (near.d < 0.6) continue;
       // 连线不能穿过水面：这种情况宁可留断头，交给桥梁/河岸处理
       const mid = { x: (p.x + near.x) / 2, z: (p.z + near.z) / 2 };
       if (inWater(mid.x, mid.z)) continue;
+      if (near.d <= SNAP_MOVE) {
+        // 近距离直接吸附端点：两条路真正共点，不再靠一条斜线"搭"过去
+        const elev = line[endPos].elev;
+        line[endPos] = elev ? { x: near.x, z: near.z, elev } : { x: near.x, z: near.z };
+        snapped += 1;
+        continue;
+      }
+      // 补连线只在"顺着末段走向"时做：掉头连接会把路折回自身，末端成针尖
+      const ux = p.x - q.x;
+      const uz = p.z - q.z;
+      const vx = near.x - p.x;
+      const vz = near.z - p.z;
+      const ul = Math.hypot(ux, uz) || 1;
+      const vl = Math.hypot(vx, vz) || 1;
+      if ((ux * vx + uz * vz) / (ul * vl) < 0.2) continue;
       if (endPos === 0) line.unshift({ x: near.x, z: near.z });
       else line.push({ x: near.x, z: near.z });
       snapped += 1;
@@ -699,12 +781,14 @@ majorLines = majorLines
   .map(trimWaterEnds)
   .filter(Boolean)
   .map((line) => pushOutOfWater(line, 13))
-  .flatMap(splitLongWaterRuns);
+  .flatMap(splitLongWaterRuns)
+  .map(straightenWaterCrossings);
 minorLines = minorLines
   .map(trimWaterEnds)
   .filter(Boolean)
   .map((line) => pushOutOfWater(line, 5.5))
-  .flatMap(splitLongWaterRuns);
+  .flatMap(splitLongWaterRuns)
+  .map(straightenWaterCrossings);
 
 /* ---------------- 双幅路合并（老城内） ---------------- */
 
@@ -881,20 +965,39 @@ minorLines = scenicMinor.kept;
 const scenicDropped = scenicMajor.dropped + scenicMinor.dropped;
 
 /**
- * 闭环剔除：OSM 里大量 `service` / 匝道是首尾重合的闭合环路（停车场、小区
- * 内部道路、立交环形匝道）。按带状面渲染后，锐角处就是一个细长的黑色尖刺
- * （留园西北的新庄立交最明显）。这类环路在 1:1 沙盘上看不出"环"，只贡献噪声，
- * 整条剔除；周长 > 400m 的大环保留（可能是真正的环城支路）。
+ * 闭环取舍（原 dropClosedLoops 只会整条删掉，丢掉大量真实路网）。
+ *
+ * OSM 里首尾重合的闭环主要是两类：
+ *   · 真环：环岛、环形匝道、环城支路——周长 ≈ π·直径，应保留；
+ *   · 假环：同一条路被画成"去—回"两幅（相距只有几米），周长 ≈ 2·直径，
+ *     按 26m 宽铺出来就是一个实心针尖（留园西北的示例最典型）。
+ *
+ * 对假环不整条删除，而是取主干道：从起点找回程分叉处（离起点最远的点），
+ * 保留去程/回程里更长的一半。这样既消掉针尖，又保住这段路本身。
  */
-const CLOSED_LOOP_LIMIT = 400;
+const LOOP_OUT_AND_BACK = 1.35;
 
-const dropClosedLoops = (lines) =>
-  lines.filter((line) => {
-    if (line.length < 4) return true;
+const openNarrowLoops = (lines) =>
+  lines.flatMap((line) => {
+    if (line.length < 4) return [line];
     const head = line[0];
     const tail = line[line.length - 1];
-    if (Math.hypot(head.x - tail.x, head.z - tail.z) > 3) return true;
-    return lengthOf(line) > CLOSED_LOOP_LIMIT;
+    if (Math.hypot(head.x - tail.x, head.z - tail.z) > 3) return [line];
+    const len = lengthOf(line);
+    let far = 0;
+    let farD = -1;
+    for (let i = 0; i < line.length; i += 1) {
+      const d = Math.hypot(line[i].x - head.x, line[i].z - head.z);
+      if (d > farD) {
+        farD = d;
+        far = i;
+      }
+    }
+    if (len / (2 * Math.max(farD, 1)) > LOOP_OUT_AND_BACK) return [line];
+    const outbound = line.slice(0, far + 1);
+    const inbound = line.slice(far);
+    const kept = lengthOf(outbound) >= lengthOf(inbound) ? outbound : inbound;
+    return lengthOf(kept) >= 25 ? [kept] : [];
   });
 
 const round = (lines) =>
@@ -987,8 +1090,9 @@ function dedupeLines(lines, alreadyKept = []) {
   return kept;
 }
 
-majorLines = dropClosedLoops(majorLines);
-minorLines = dropClosedLoops(minorLines);
+// 闭环：真环保留，假环（去—回两幅贴在一起）取主干道，消除针尖
+majorLines = openNarrowLoops(majorLines);
+minorLines = openNarrowLoops(minorLines);
 
 // 缠绕折线（院落/广场里被 OSM 链成来回折返的 service 巷）必须在去重前剔除，
 // 否则 11m 宽铺出来就是一块块带虚线的黑色沥青平台。
@@ -1147,6 +1251,721 @@ function dedupeOverlap(lines, occupied = []) {
 majorLines = dedupeOverlap(majorLines);
 minorLines = dedupeOverlap(minorLines, majorLines);
 
+/**
+ * 折返尖头切除。
+ * 道路数据里仍有"伸出去再折回来"的折返顶点（两条臂夹角 ≤20°）：按 26m 宽
+ * 铺开就是一根黑色针尖。这里在折返点把较短的一条臂整段切掉，只留主干方向；
+ * 切完不足 25m 的直接整条删除（这种本来就接不上主干道）。
+ */
+const HAIRPIN_ARM_DEG = 20;
+
+const armAngle = (a, b, c) => {
+  const ux = a.x - b.x;
+  const uz = a.z - b.z;
+  const vx = c.x - b.x;
+  const vz = c.z - b.z;
+  const lu = Math.hypot(ux, uz) || 1;
+  const lv = Math.hypot(vx, vz) || 1;
+  const dot = (ux * vx + uz * vz) / (lu * lv);
+  return (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI;
+};
+
+function cutHairpins(lines) {
+  let cut = 0;
+  let deleted = 0;
+  const out = [];
+  const farPoint = (line, i, dir) => {
+    let j = i + dir;
+    while (j > 0 && j < line.length - 1) {
+      if (Math.hypot(line[j].x - line[i].x, line[j].z - line[i].z) >= 1.5) return line[j];
+      j += dir;
+    }
+    return null;
+  };
+  for (const original of lines) {
+    let line = original;
+    let guard = 0;
+    while (line.length >= 3 && guard < 12) {
+      guard += 1;
+      let hit = -1;
+      let hitAngle = Infinity;
+      for (let i = 1; i < line.length - 1; i += 1) {
+        const a = farPoint(line, i, -1);
+        const c = farPoint(line, i, 1);
+        if (!a || !c) continue;
+        const ang = armAngle(a, line[i], c);
+        if (ang <= HAIRPIN_ARM_DEG && ang < hitAngle) {
+          hitAngle = ang;
+          hit = i;
+        }
+      }
+      if (hit === -1) break;
+      const pre = lengthOf(line.slice(0, hit + 1));
+      const suf = lengthOf(line.slice(hit));
+      line = pre <= suf ? line.slice(hit) : line.slice(0, hit + 1);
+      cut += 1;
+    }
+    if (lengthOf(line) < 25) {
+      deleted += 1;
+      continue;
+    }
+    out.push(line);
+  }
+  if (cut > 0) console.log(`[道路] 折返尖头切除 ${cut} 处，整条删除 ${deleted} 条`);
+  return out;
+}
+
+/**
+ * 转角拟合：把 ≥8° 的拐点用二次贝塞尔圆滑掉，端点保持不动（路口不能漂移）。
+ * 位移上限 2.2m，远小于路宽，因此路口处最多差半个车身，不会再出现"折角"。
+ */
+const SMOOTH_MAX_OFFSET = 2.2;
+
+/**
+ * @param maxOffset 单侧切角长度上限（米）。主干道必须给到 ~8m：
+ *   26m 宽的路用 2m 圆角，外缘足够、内缘会在转角折出一条尖刺，
+ *   看起来就是一个突兀的"箭头/直角"。支路 3.5m 已经够顺。
+ */
+function smoothCorners(lines, maxOffset = SMOOTH_MAX_OFFSET) {
+  return lines.map((line) => {
+    const n = line.length;
+    if (n < 3) return line;
+    const out = [line[0]];
+    for (let i = 1; i < n - 1; i += 1) {
+      const a = line[i - 1];
+      const b = line[i];
+      const c = line[i + 1];
+      const ux = a.x - b.x;
+      const uz = a.z - b.z;
+      const vx = c.x - b.x;
+      const vz = c.z - b.z;
+      const lu = Math.hypot(ux, uz);
+      const lv = Math.hypot(vx, vz);
+      if (lu < 1e-6 || lv < 1e-6) {
+        out.push(b);
+        continue;
+      }
+      const dot = (ux * vx + uz * vz) / (lu * lv);
+      const turn = Math.acos(Math.max(-1, Math.min(1, dot)));
+      if (turn < 0.14) {
+        out.push(b);
+        continue;
+      }
+      const d = Math.min(Math.min(lu, lv) * 0.3, maxOffset);
+      if (d < 0.7) {
+        out.push(b);
+        continue;
+      }
+      const p0 = { x: b.x + (ux / lu) * d, z: b.z + (uz / lu) * d };
+      const p2 = { x: b.x + (vx / lv) * d, z: b.z + (vz / lv) * d };
+      for (const t of [0.25, 0.5, 0.75]) {
+        const mt = 1 - t;
+        const p = {
+          x: mt * mt * p0.x + 2 * mt * t * b.x + t * t * p2.x,
+          z: mt * mt * p0.z + 2 * mt * t * b.z + t * t * p2.z,
+        };
+        if (b.elev) p.elev = b.elev;
+        out.push(p);
+      }
+    }
+    out.push(line[n - 1]);
+    return out;
+  });
+}
+
+/** 去掉 0.5m 以内的连续点：简化/舍入后残留的微小抖动会被误判成折返 */
+function denoiseLines(lines) {
+  return lines.map((line) => {
+    if (line.length < 3) return line;
+    const out = [line[0]];
+    for (let i = 1; i < line.length - 1; i += 1) {
+      const last = out[out.length - 1];
+      if (Math.hypot(line[i].x - last.x, line[i].z - last.z) < 0.5) continue;
+      out.push(line[i]);
+    }
+    const tail = line[line.length - 1];
+    const last = out[out.length - 1];
+    if (out.length > 1 && Math.hypot(tail.x - last.x, tail.z - last.z) < 0.5) out.pop();
+    out.push(tail);
+    return out;
+  });
+}
+
+/** 最后清一遍 <30m 且两端都接不上任何路的碎段（用户说的"只有一小段、都不连通"） */
+function dropTinyFragments(lines) {
+  const index = buildSegmentIndex(lines);
+  let dropped = 0;
+  const kept = lines.filter((line, li) => {
+    if (lengthOf(line) >= 30) return true;
+    if (nearestOnOthers(index, line, li, line[0], 6)) return true;
+    if (nearestOnOthers(index, line, li, line[line.length - 1], 6)) return true;
+    dropped += 1;
+    return false;
+  });
+  if (dropped > 0) console.log(`[道路] 孤立碎段剔除 ${dropped} 条`);
+  return kept;
+}
+
+/**
+ * 断头收口（最后一道）：
+ * stitch 在去重之前执行，之后 dropScenicFootpaths / dedupeOverlap 又会把线头
+ * 剪掉，最终数据里仍留着大量 3~15m 没接上的路头——俯视就是一条条短黑带
+ * 停在路口外一两间房的位置。这里在输出前再收一遍：
+ *   · 端点 0.8m 内已有别的路 → 视为已接好；
+ *   · 否则 60m 内找最近的路：连线方向与末段方向夹角 ≤60°（或几乎轴向）
+ *     且不跨水 → 补一段直连线，让路口真正接上；
+ *   · 两端都接不上、本身又短于 120m 的整条删除，城市里不留孤立断头小路。
+ */
+function sealDeadEnds(lines) {
+  const SEAL = 60;
+  const SEAL_FAR = 130;
+  let linked = 0;
+  let dropped = 0;
+
+  /** 近距离用网格索引；远距离直接遍历所有线段（候选点只剩几十个，开销可接受） */
+  const nearestFar = (line, li, p, maxDist) => {
+    let best = null;
+    for (let j = 0; j < lines.length; j += 1) {
+      if (j === li) continue;
+      const other = lines[j];
+      for (let k = 0; k < other.length - 1; k += 1) {
+        const a = other[k];
+        const b = other[k + 1];
+        const dx = b.x - a.x;
+        const dz = b.z - a.z;
+        const len2 = dx * dx + dz * dz;
+        let t = len2 > 0 ? ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const qx = a.x + t * dx;
+        const qz = a.z + t * dz;
+        const d = Math.hypot(p.x - qx, p.z - qz);
+        if (d <= maxDist && (!best || d < best.d)) best = { x: qx, z: qz, d };
+      }
+    }
+    return best;
+  };
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    const index = buildSegmentIndex(lines);
+    const doomed = new Set();
+    for (let li = 0; li < lines.length; li += 1) {
+      const line = lines[li];
+      if (line.length < 2) continue;
+      let free = 0;
+      for (const isHead of [true, false]) {
+        const end = isHead ? line[0] : line[line.length - 1];
+        const prev = isHead ? line[1] : line[line.length - 2];
+        let near = nearestOnOthers(index, line, li, end, SEAL);
+        // 远距离补接更严格：只接受"顺着末段方向"的连接，避免斜穿街区
+        let farStrict = false;
+        if (!near || near.d > SEAL) {
+          const far = nearestFar(line, li, end, SEAL_FAR);
+          if (far) {
+            near = far;
+            farStrict = true;
+          }
+        }
+        if (near && near.d <= 0.8) continue;
+        if (!near) {
+          free += 1;
+          continue;
+        }
+        const ux = end.x - prev.x;
+        const uz = end.z - prev.z;
+        const ul = Math.hypot(ux, uz) || 1;
+        const vx = near.x - end.x;
+        const vz = near.z - end.z;
+        const vl = Math.hypot(vx, vz) || 1;
+        const dot = (ux / ul) * (vx / vl) + (uz / ul) * (vz / vl);
+        const axial = !farStrict && (Math.abs(vx) < 3.5 || Math.abs(vz) < 3.5);
+        const minDot = farStrict ? 0.82 : 0.5;
+        // 掉头连接（dot<0.15）一律不做：顺着末段方向的连接才是路口
+        const aligned = dot >= minDot || (axial && dot >= 0.15);
+        const mid = { x: (end.x + near.x) / 2, z: (end.z + near.z) / 2 };
+        if (aligned && !inWater(mid.x, mid.z) && !inWater(near.x, near.z)) {
+          if (isHead) line.unshift({ x: near.x, z: near.z });
+          else line.push({ x: near.x, z: near.z });
+          linked += 1;
+        } else {
+          free += 1;
+        }
+      }
+      if (free >= 2 && lengthOf(line) < 120) doomed.add(li);
+    }
+    if (doomed.size === 0) break;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (doomed.has(i)) {
+        lines.splice(i, 1);
+        dropped += 1;
+      }
+    }
+  }
+  if (linked > 0 || dropped > 0) {
+    console.log(`[道路] 断头收口：补接 ${linked} 处，删除孤立短路 ${dropped} 条`);
+  }
+  return lines;
+}
+
+majorLines = cutHairpins(majorLines);
+minorLines = cutHairpins(minorLines);
+
+majorLines = sealDeadEnds(majorLines);
+minorLines = sealDeadEnds(minorLines);
+
+/**
+ * 断头路截尾（最后保险）：
+ * 补接之后仍会剩下一些"最近的路在 130m 外、或方向差太多不能硬连"的路头。
+ * 这时不再拉新路，而是从空缺端往回退，退到这条路上最后一次跟别的路相交的
+ * 位置截断；一路退到底都没有交叉口的整条删除。
+ *
+ * 例外：端点离城墙（护城河轮廓）45m 以内视为"路到城墙为止"，保留——
+ * 这是城市边界，不是断头路。
+ */
+function pruneDanglingTails(lines) {
+  const combined = [...majorLines, ...minorLines];
+  const index = buildSegmentIndex(combined);
+  const nearWall = (x, z) => distToPolyline(x, z, cityRingClosed) <= 45;
+
+  /** 从一端往回找第一个与其它道路相接的位置；返回裁剪后的折线或 null */
+  const prune = (line, li, isHead) => {
+    const pts = isHead ? line : [...line].reverse();
+    if (pts.length < 2) return null;
+    // 端头本来就接在路口/城墙上 → 不是断头，整条保留（绝大多数街段走这里）
+    if (nearestOnOthers(index, line, li, pts[0], 3.2)) return line;
+    if (nearWall(pts[0].x, pts[0].z)) return line;
+
+    let result = null;
+    for (let s = 0; s < pts.length - 1 && !result; s += 1) {
+      const a = pts[s];
+      const b = pts[s + 1];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      const steps = Math.max(1, Math.ceil(len / 4));
+      for (let k = 0; k <= steps && !result; k += 1) {
+        const t = k / steps;
+        if (k === 0 && s === 0) continue; // 悬空端本身，上面已判定
+        const p = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
+        if (nearestOnOthers(index, line, li, p, 3.2)) {
+          // 保留"从交点往城市内侧"的那一段
+          result = [{ x: p.x, z: p.z }, ...pts.slice(s + 1)];
+          if (!isHead) result.reverse();
+          break;
+        }
+      }
+    }
+    if (!result) {
+      // 退到另一端仍没有交叉口：只有另一端贴着城墙/路口时才保留
+      const far = pts[pts.length - 1];
+      if (nearWall(far.x, far.z)) return line;
+      if (nearestOnOthers(index, line, li, far, 3.2)) return line;
+      return null;
+    }
+    // 截完太短就不要了
+    return lengthOf(result) >= 25 ? result : null;
+  };
+
+  const prunedMajor = majorLines.map((line, i) => {
+    if (line.length < 2) return line;
+    let out = prune(line, i, true);
+    if (!out) return null;
+    out = prune(out, i, false);
+    return out && out.length >= 2 ? out : null;
+  });
+  const prunedMinor = minorLines.map((line, i) => {
+    if (line.length < 2) return line;
+    const li = majorLines.length + i;
+    let out = prune(line, li, true);
+    if (!out) return null;
+    out = prune(out, li, false);
+    return out && out.length >= 2 ? out : null;
+  });
+
+  const keptMajor = prunedMajor.filter(Boolean);
+  const keptMinor = prunedMinor.filter(Boolean);
+  const removed = majorLines.length + minorLines.length - keptMajor.length - keptMinor.length;
+  if (removed > 0) console.log(`[道路] 断头截尾：整条移除 ${removed} 条无交叉状态的孤立路`);
+  majorLines = keptMajor;
+  minorLines = keptMinor;
+  return removed;
+}
+
+pruneDanglingTails();
+
+// 所有几何处理结束后再做一次转角拟合与碎段清理，保证输出就是最终形态。
+// 注意顺序：先拟合、再去噪，然后重新跑一次闭环/尖头清理——
+// 拟合和缝合都可能把已经打开的路口重新折回去。
+majorLines = smoothCorners(majorLines, 8);
+minorLines = smoothCorners(minorLines, 3.5);
+// 拟合可能把桥位附近的点又带进水面，最后再拉直一次
+majorLines = majorLines.map(straightenWaterCrossings);
+minorLines = minorLines.map(straightenWaterCrossings);
+majorLines = denoiseLines(majorLines);
+minorLines = denoiseLines(minorLines);
+majorLines = openNarrowLoops(majorLines);
+minorLines = openNarrowLoops(minorLines);
+majorLines = cutHairpins(majorLines);
+minorLines = cutHairpins(minorLines);
+majorLines = denoiseLines(majorLines);
+minorLines = denoiseLines(minorLines);
+majorLines = dropTinyFragments(majorLines);
+minorLines = dropTinyFragments(minorLines);
+
+/**
+ * 输出前最后一轮断头收尾：
+ * 拟合/去噪之后，路口端头会重新被拉开 10~60m——俯视就是一条黑带停在街区当中。
+ * 这里不再做方向判断，只做两件事：
+ *   · 35m 内够得着别的路 → 补一个端点到对侧中心线，形成真正的 T 口；
+ *   · 够不着 → 从最后一个交叉点往回截掉悬空尾巴（整条无交叉且 <120m 的删除）。
+ * 河岸边 25m 内的收头视为自然收口（河埠头），不截。
+ */
+function sealFinalEnds() {
+  const CONNECT = 35;
+  let linked = 0;
+  let trimmed = 0;
+  const doomed = new Set();
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    const combined = [...majorLines, ...minorLines];
+    const index = buildSegmentIndex(combined);
+    let changed = 0;
+
+    for (let li = 0; li < combined.length; li += 1) {
+      const line = combined[li];
+      if (line.length < 2) continue;
+
+      for (const isHead of [true, false]) {
+        if (line.length < 2) break;
+        const p = isHead ? line[0] : line[line.length - 1];
+        const near = nearestOnOthers(index, line, li, p, CONNECT);
+
+        if (near) {
+          if (near.d < 3) continue; // 已在路口上，交给最终吸附抹平
+          const mid = { x: (p.x + near.x) / 2, z: (p.z + near.z) / 2 };
+          if (inWater(mid.x, mid.z) || inWater(near.x, near.z)) continue;
+          const add = p.elev ? { x: near.x, z: near.z, elev: p.elev } : { x: near.x, z: near.z };
+          if (isHead) line.unshift(add);
+          else line.push(add);
+          // 两端接到同一个路口会闭出一个假环，撤销后走截尾分支
+          const h = line[0];
+          const t = line[line.length - 1];
+          if (line.length > 2 && Math.hypot(h.x - t.x, h.z - t.z) < 4) {
+            if (isHead) line.shift();
+            else line.pop();
+          } else {
+            linked += 1;
+            changed += 1;
+            continue;
+          }
+        }
+
+        // 够不着任何路：河边收头保留，其余从最后一个交叉点截断
+        const w = nearestWater(p.x, p.z);
+        if (w && w.d < w.half + 25) continue;
+
+        const order = isHead ? line.slice() : line.slice().reverse();
+        let keepFrom = -1;
+        for (let s = 1; s < order.length - 1; s += 1) {
+          if (nearestOnOthers(index, line, li, order[s], 3)) {
+            keepFrom = s;
+            break;
+          }
+        }
+        if (keepFrom < 0) {
+          if (lengthOf(line) < 120) doomed.add(line);
+          break;
+        }
+        const kept = order.slice(keepFrom);
+        if (!isHead) kept.reverse();
+        if (lengthOf(kept) < 25) {
+          doomed.add(line);
+          break;
+        }
+        line.length = 0;
+        line.push(...kept);
+        trimmed += 1;
+        changed += 1;
+      }
+    }
+    if (changed === 0) break;
+  }
+
+  if (doomed.size > 0) {
+    majorLines = majorLines.filter((l) => !doomed.has(l));
+    minorLines = minorLines.filter((l) => !doomed.has(l));
+  }
+  console.log(
+    `[道路] 断头收尾：补接 ${linked} 处、截尾 ${trimmed} 处、删除无交叉孤立路 ${doomed.size} 条`,
+  );
+}
+sealFinalEnds();
+// 补接产生的折角在这一步圆顺（端点保持不动，不会再把路口拉开）
+majorLines = smoothCorners(majorLines, 8);
+minorLines = smoothCorners(minorLines, 3.5);
+// 端点折返必须在去水/降噪/吸附之前剪掉：后面的步骤会重新圆顺折角、
+// 把线头吸到路口，如果拖到最后再剪，剪出来的短段既进不了水又被孤立。
+{
+  const r1 = trimHairpinTips(majorLines);
+  majorLines = r1.lines;
+  const r2 = trimHairpinTips(minorLines);
+  minorLines = r2.lines;
+  const trimmed = r1.trimmed + r2.trimmed;
+  if (trimmed > 0) console.log(`[道路] 端点折返尖刺剪除 ${trimmed} 处`);
+}
+// 圆角拟合可能把折点带进水里：最后再拉直一次，桥上保持直行
+majorLines = majorLines.map(straightenWaterCrossings);
+minorLines = minorLines.map(straightenWaterCrossings);
+majorLines = denoiseLines(majorLines);
+minorLines = denoiseLines(minorLines);
+
+/* ---------------- 高架/立交：从平面路网里挑出来单独抬高 ---------------- */
+const OVERPASS_WATER_CLEARANCE = 28;
+const overpass = [];
+const collectOverpass = (lines, kind) => {
+  lines.forEach((line, index) => {
+    const elevated = line.filter((p) => p.elev);
+    if (elevated.length < Math.max(2, line.length * 0.5)) return;
+    // 跨河桥由 CanalBridges 生成石桥，再抬一层会穿模：这类留在平面
+    const nearWater = line.some((p) => {
+      const w = nearestWater(p.x, p.z);
+      return w && w.depth > w.half - OVERPASS_WATER_CLEARANCE;
+    });
+    if (nearWater) return;
+    overpass.push({ kind, index, h: Math.max(...elevated.map((p) => p.elev)) });
+  });
+};
+/**
+ * 最终端点吸附：把所有端点真正落到最近一条路的中心线上。
+ * 前面的去水/平滑/截尾都可能把端点重新挪开 0.5~4m，
+ * 渲染时端头圆角就会在路口外鼓出一个"肉瘤"（看起来像断头）。
+ * 这里不再做方向判断——只横向挪几米，不会造成掉头。
+ */
+function finalSnapEnds(majorLines, minorLines) {
+  const majorIndex = buildSegmentIndex(majorLines);
+  const minorIndex = buildSegmentIndex(minorLines);
+  let moved = 0;
+  const scan = (lines, major) => {
+    const selfIndex = major ? majorIndex : minorIndex;
+    const otherIndex = major ? minorIndex : majorIndex;
+    lines.forEach((line, li) => {
+      if (line.length < 2) return;
+      for (const atStart of [true, false]) {
+        const p = atStart ? line[0] : line[line.length - 1];
+        const same = nearestOnOthers(selfIndex, line, li, p, 4);
+        const cross = nearestOnOthers(otherIndex, line, -1, p, 4);
+        const hit = cross && (!same || cross.d < same.d) ? cross : same;
+        if (!hit || hit.d < 0.4) continue;
+        const next = { x: hit.x, z: hit.z };
+        if (p.elev) next.elev = p.elev;
+        if (atStart) line[0] = next;
+        else line[line.length - 1] = next;
+        moved += 1;
+      }
+    });
+  };
+  scan(majorLines, true);
+  scan(minorLines, false);
+  console.log(`[道路] 端点最终吸附 ${moved} 处（消除路口端头偏移）`);
+}
+finalSnapEnds(majorLines, minorLines);
+
+/**
+ * 输出前最后一轮"整线重合"清理。
+ *
+ * 前面的整线去重发生在端点吸附与圆角拟合之前，之后 finalSnapEnds 会把两条
+ * 本来相差十几米的重复 way 的端点吸到同一个路口——"同一条路画两遍"又回来了。
+ * 俯视下就是两条 26m 宽路面整条互相压着闪，路面也显得比实际宽。
+ *
+ * 判据：短的那条 90% 的采样点都落在长的那条中心线 offset 米以内、且方向一致。
+ * 只与"更长且已保留"的线比较（降序处理），所以不会整片互相删空。
+ */
+function dedupeCovered(lines, offset, occupied = []) {
+  const CELL = 40;
+  const key = (ix, iz) => ix * 100000 + iz;
+  const grid = new Map();
+  const addSegs = (line) => {
+    for (let i = 0; i < line.length - 1; i += 1) {
+      const a = line[i];
+      const b = line[i + 1];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      if (len < 0.5) continue;
+      const seg = { ax: a.x, az: a.z, bx: b.x, bz: b.z, ux: (b.x - a.x) / len, uz: (b.z - a.z) / len };
+      const x0 = Math.floor(Math.min(a.x, b.x) / CELL);
+      const x1 = Math.floor(Math.max(a.x, b.x) / CELL);
+      const z0 = Math.floor(Math.min(a.z, b.z) / CELL);
+      const z1 = Math.floor(Math.max(a.z, b.z) / CELL);
+      for (let ix = x0; ix <= x1; ix += 1)
+        for (let iz = z0; iz <= z1; iz += 1) {
+          const k = key(ix, iz);
+          if (!grid.has(k)) grid.set(k, []);
+          grid.get(k).push(seg);
+        }
+    }
+  };
+  /** 该点是否被一条同向中心线压住（offset < CELL，查 3×3 格就够） */
+  const nearOne = (x, z, ux, uz) => {
+    const cx = Math.floor(x / CELL);
+    const cz = Math.floor(z / CELL);
+    for (let ix = cx - 1; ix <= cx + 1; ix += 1)
+      for (let iz = cz - 1; iz <= cz + 1; iz += 1) {
+        const bucket = grid.get(key(ix, iz));
+        if (!bucket) continue;
+        for (const s of bucket) {
+          if (Math.abs(s.ux * ux + s.uz * uz) < 0.93) continue;
+          const dx = s.bx - s.ax;
+          const dz = s.bz - s.az;
+          const l2 = dx * dx + dz * dz;
+          let t = l2 > 0 ? ((x - s.ax) * dx + (z - s.az) * dz) / l2 : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          if (Math.hypot(x - s.ax - t * dx, z - s.az - t * dz) < offset) return true;
+        }
+      }
+    return false;
+  };
+
+  for (const line of occupied) addSegs(line);
+  const order = lines
+    .map((line) => ({ line, len: lengthOf(line) }))
+    .sort((a, b) => b.len - a.len);
+
+  const kept = [];
+  let dropped = 0;
+  let meters = 0;
+  for (const { line, len } of order) {
+    if (len >= 40) {
+      const dx = line[line.length - 1].x - line[0].x;
+      const dz = line[line.length - 1].z - line[0].z;
+      const dl = Math.hypot(dx, dz) || 1;
+      const ux = dx / dl;
+      const uz = dz / dl;
+      const samples = sampleLine(line, 10);
+      let near = 0;
+      for (const p of samples) if (nearOne(p.x, p.z, ux, uz)) near += 1;
+      if (near / samples.length >= 0.9) {
+        dropped += 1;
+        meters += len;
+        continue;
+      }
+    }
+    kept.push(line);
+    addSegs(line);
+  }
+  return { kept, dropped, meters };
+}
+
+{
+  const res = dedupeCovered(majorLines, 10);
+  majorLines = res.kept;
+  const res2 = dedupeCovered(minorLines, 6, majorLines);
+  minorLines = res2.kept;
+  const dropped = res.dropped + res2.dropped;
+  const meters = res.meters + res2.meters;
+  if (dropped > 0) {
+    console.log(`[道路] 重合整线裁剪 ${dropped} 条 / ${Math.round(meters)} 米（同一路段被画了两遍）`);
+  }
+}
+
+/**
+ * 输出前最后一次收口。
+ * finalSnapEnds 会把端点硬拽到路口中心线上，偶尔又拉出一根 2~4m 的回针
+ * （俯视就是路头一根针尖）；剪掉回针后剩下的短段两头都不接路，属于纯碎片，
+ * 一并删掉，避免沙盘上出现孤零零的一小截。
+ */
+{
+  const r1 = trimHairpinTips(majorLines);
+  majorLines = r1.lines;
+  const r2 = trimHairpinTips(minorLines);
+  minorLines = r2.lines;
+  const trimmed = r1.trimmed + r2.trimmed;
+
+  const majorIndex = buildSegmentIndex(majorLines);
+  const minorIndex = buildSegmentIndex(minorLines);
+  let orphans = 0;
+  const pruneOrphans = (lines, index, otherIndex) => {
+    const kept = [];
+    lines.forEach((line, li) => {
+      if (lengthOf(line) >= 30) {
+        kept.push(line);
+        return;
+      }
+      const linked = (p) =>
+        Boolean(nearestOnOthers(index, line, li, p, 6)) ||
+        Boolean(nearestOnOthers(otherIndex, line, -1, p, 6));
+      if (linked(line[0]) || linked(line[line.length - 1])) {
+        kept.push(line);
+        return;
+      }
+      orphans += 1;
+    });
+    return kept;
+  };
+  majorLines = pruneOrphans(majorLines, majorIndex, minorIndex);
+  minorLines = pruneOrphans(minorLines, minorIndex, buildSegmentIndex(majorLines));
+  if (trimmed > 0) console.log(`[道路] 收尾折返尖刺剪除 ${trimmed} 处`);
+  if (orphans > 0) console.log(`[道路] 收尾孤立碎段删除 ${orphans} 条`);
+}
+
+/**
+ * 剪掉端点折返的"回针"。
+ *
+ * 少数 way 的线头会沿原路再折回去一小段（吸附/补接/数据本身），折返点处
+ * 两条臂几乎重合反向。26m 宽的路面铺到那里就会收成一个针尖——俯视下就是
+ * 路头多出一根细尖刺。折返只出现在线头（实测 35 头 / 24 尾、中间 0 处），
+ * 所以直接丢掉线头那个多余点，保留折返点本身（它通常正是路口）。
+ */
+function trimHairpinTips(lines, maxAngleDeg = 22) {
+  const cosLimit = Math.cos((maxAngleDeg * Math.PI) / 180);
+  let trimmed = 0;
+  const out = [];
+  for (const raw of lines) {
+    const line = raw.slice();
+    let changed = true;
+    while (changed && line.length > 2) {
+      changed = false;
+      const i = 1;
+      const a = line[i - 1];
+      const b = line[i];
+      const c = line[i + 1];
+      const ux = a.x - b.x;
+      const uz = a.z - b.z;
+      const vx = c.x - b.x;
+      const vz = c.z - b.z;
+      const lu = Math.hypot(ux, uz);
+      const lv = Math.hypot(vx, vz);
+      if (lu > 0.01 && lv > 0.01 && (ux * vx + uz * vz) / (lu * lv) >= cosLimit) {
+        line.shift();
+        trimmed += 1;
+        changed = true;
+        continue;
+      }
+      const j = line.length - 2;
+      const a2 = line[j - 1];
+      const b2 = line[j];
+      const c2 = line[j + 1];
+      const ux2 = a2.x - b2.x;
+      const uz2 = a2.z - b2.z;
+      const vx2 = c2.x - b2.x;
+      const vz2 = c2.z - b2.z;
+      const lu2 = Math.hypot(ux2, uz2);
+      const lv2 = Math.hypot(vx2, vz2);
+      if (lu2 > 0.01 && lv2 > 0.01 && (ux2 * vx2 + uz2 * vz2) / (lu2 * lv2) >= cosLimit) {
+        line.pop();
+        trimmed += 1;
+        changed = true;
+      }
+    }
+    if (line.length >= 2) out.push(line);
+  }
+  return { lines: out, trimmed };
+}
+
+collectOverpass(majorLines, 'major');
+collectOverpass(minorLines, 'minor');
+if (overpass.length > 0) {
+  const hs = overpass.map((o) => o.h);
+  console.log(
+    `[道路] 高架/立交 ${overpass.length} 段单独抬高渲染（${Math.min(...hs).toFixed(1)}~${Math.max(...hs).toFixed(1)}m）`,
+  );
+}
+
 const majorOut = round(majorLines);
 const minorOut = round(minorLines);
 
@@ -1158,5 +1977,13 @@ console.log(
 
 await mkdir(new URL('../public/data/', import.meta.url), { recursive: true });
 const outFile = new URL('../public/data/roads.json', import.meta.url);
-await writeFile(outFile, JSON.stringify({ meta: { origin: ORIGIN, unit: 'meter' }, major: majorOut, minor: minorOut }));
+await writeFile(
+  outFile,
+  JSON.stringify({
+    meta: { origin: ORIGIN, unit: 'meter' },
+    major: majorOut,
+    minor: minorOut,
+    overpass,
+  }),
+);
 console.log(`[输出] ${outFile.pathname}`);

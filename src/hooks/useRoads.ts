@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react';
 import type { LocalPoint2 } from '../types';
 
+/** 高架/立交段：指向 major/minor 里的某条折线，h 为桥面净高（米） */
+export interface OverpassSegment {
+  kind: 'major' | 'minor';
+  index: number;
+  h: number;
+}
+
 export interface RoadsData {
   major: LocalPoint2[][];
   minor: LocalPoint2[][];
+  overpass?: OverpassSegment[];
 }
 
 let cache: RoadsData | null = null;

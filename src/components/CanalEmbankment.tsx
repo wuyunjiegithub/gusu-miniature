@@ -6,7 +6,7 @@ import { buildEmbankmentGeometry } from '../utils/embankment';
 
 /**
  * 城内运河驳岸：压顶石条 + 裙墙 + 河埠头 + 系船石，合并为单个 mesh（1 draw call）。
- * 与水面同高体系（2.4m），雪天整体提亮。
+ * 与水面同高体系（0.35m），雪天整体提亮。
  */
 export function CanalEmbankment() {
   const winter = useSandTable((state) => state.season === 'winter');

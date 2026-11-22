@@ -18,6 +18,8 @@ const views = process.argv.slice(3).map((arg) => {
 });
 
 const settle = (page, ms) => page.evaluate((t) => new Promise((r) => setTimeout(r, t)), ms);
+/** 模型生成较慢时可 WAIT_MS=35000 覆盖 */
+const WAIT = Number(process.env.WAIT_MS ?? 18000);
 
 await mkdir(OUT, { recursive: true });
 const browser = await puppeteer.launch({
@@ -39,13 +41,17 @@ for (const view of views) {
   const sep = BASE.includes('?') ? '&' : '?';
   let url = `${BASE}${sep}cam=${view.cam}&target=${view.target}`;
   if (view.extra) {
-    for (const pair of view.extra.split(',')) {
-      const [k, v] = pair.split('=');
-      if (k && v) url += `&${k}=${v}`;
+    // 值本身可能含逗号（如 hide=roads,water），没有等号的片段并回上一个值
+    const pairs = [];
+    for (const piece of view.extra.split(',')) {
+      const eq2 = piece.indexOf('=');
+      if (eq2 > 0) pairs.push([piece.slice(0, eq2), piece.slice(eq2 + 1)]);
+      else if (pairs.length > 0) pairs[pairs.length - 1][1] += `,${piece}`;
     }
+    for (const [k, v] of pairs) if (k && v) url += `&${k}=${v}`;
   }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
-  await settle(page, 9000);
+  await settle(page, WAIT);
   await page.screenshot({ path: `${OUT}/${view.name}.png` });
   console.log(`[shot] ${view.name}`);
 }

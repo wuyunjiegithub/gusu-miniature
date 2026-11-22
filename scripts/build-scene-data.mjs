@@ -310,6 +310,49 @@ waterways.length = 0;
 waterways.push(...keptWaterways);
 console.log(`[水系] 城内线段组 ${waterways.length} 组（剔除孤立水洼 ${waterDropped} 段）`);
 
+/* ---------------- 2.5 历史河道主干（三横四直） ----------------
+ * OSM 在古城内只剩环城河内侧一条水道，城区中部是"干的"，而苏州古城的
+ * 骨架恰恰是"三横四直"的直河。这里按老城实际走向补三条主干：
+ *   干将河（中横 z≈60）、十全河（南横 z≈1000）、临顿河（中直 x≈600）。
+ * 全部正交直线、两端穿过城墙伸进护城河，与街网同向，避免出现斜穿街区的怪河。
+ */
+const CITY_CANAL_SPECS = [
+  { name: '干将河', a: [-2600, 60], b: [2600, 60] },
+  { name: '十全河', a: [-2400, 1000], b: [2400, 1000] },
+  { name: '临顿河', a: [600, -2600], b: [600, 2600] },
+];
+
+/** 直线裁剪到城廓内，返回落在环内的那一段（两端点正好在城墙上） */
+const clipStraightToRing = (a, b) => {
+  const N = 400;
+  let first = null;
+  let last = null;
+  for (let i = 0; i <= N; i += 1) {
+    const t = i / N;
+    const x = a[0] + (b[0] - a[0]) * t;
+    const z = a[1] + (b[1] - a[1]) * t;
+    if (ringContains(cityOutlineLocal, x, z)) {
+      if (first === null) first = t;
+      last = t;
+    }
+  }
+  if (first === null || last === null || last - first < 1e-4) return null;
+  const at = (t) => [
+    Math.round((a[0] + (b[0] - a[0]) * t) * 10) / 10,
+    Math.round((a[1] + (b[1] - a[1]) * t) * 10) / 10,
+  ];
+  return [at(first), at(last)];
+};
+
+let curatedCanals = 0;
+for (const spec of CITY_CANAL_SPECS) {
+  const line = clipStraightToRing(spec.a, spec.b);
+  if (!line) continue;
+  waterways.push(line);
+  curatedCanals += 1;
+}
+console.log(`[水系] 补画历史河道主干 ${curatedCanals} 条（干将河 / 十全河 / 临顿河）`);
+
 /* ---------------- 2a. 地图水道退出"自带河道"的模型范围 ---------------- */
 
 /**
@@ -429,6 +472,139 @@ if (waterTrimmed > 0) {
   console.log(
     `[水系] ${waterTrimmed} 条水道与模型自带河道重叠，裁掉 ${Math.round(waterTrimMeters)} 米（该处只留模型内河）`,
   );
+}
+
+/* ---------------- 2a-2. 河网收口：不留断头河 ----------------
+ * 沙盘上最扎眼的水系问题不是河太宽，而是"河从街区中间凭空断掉"：
+ * 一条 12m 宽的水面带在房子堆里戛然而止，既不像河也不像池。
+ * 收口规则（严格按顺序）：
+ *   1. 端点距其它河道 ≤45m → 直接吸到那条河上，形成 T 形交汇；
+ *   2. 否则端点距护城河 ≤260m → 沿"端点→护城河最近点"方向延长，
+ *      并越过轮廓 9m 伸进护城河水面，保证两片水真正连上；
+ *   3. 还有悬空端的河道整条剔除——宁可少一条河，也不留断头。
+ * 这一步必须在"地图水道退出模型包围盒"之后：模型内河会切断地图水道，
+ * 切出来的残段正好由这里判定为断头并清掉。
+ */
+const outlinePts = cityOutlineLocal.map((p) => [p.x, p.z]);
+
+/** 河道折线是 [x,z] 数组，不能复用只吃 {x,z} 的 round1 */
+const roundLine = (pts) => pts.map(([x, z]) => [Math.round(x * 10) / 10, Math.round(z * 10) / 10]);
+
+const nearestOnPolyline = (x, z, line) => {
+  let best = { x: 0, z: 0, d: Infinity };
+  for (let i = 0; i < line.length - 1; i += 1) {
+    const a = line[i];
+    const b = line[i + 1];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const l2 = dx * dx + dz * dz;
+    let t = l2 > 0 ? ((x - a[0]) * dx + (z - a[1]) * dz) / l2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const px = a[0] + t * dx;
+    const pz = a[1] + t * dz;
+    const d = Math.hypot(x - px, z - pz);
+    if (d < best.d) best = { x: px, z: pz, d };
+  }
+  return best;
+};
+
+const WATER_JOIN = 45;
+const WATER_MOAT_REACH = 260;
+const MOAT_EMBED = 9;
+const WATER_MIN_LEN = 60;
+
+function closeWaterNetwork(lines) {
+  const geo = lines.map((line) => line.map((p) => [p[0], p[1]]));
+  let snapped = 0;
+  let extended = 0;
+  let dropped = 0;
+  const out = [];
+
+  for (let i = 0; i < geo.length; i += 1) {
+    const line = geo[i];
+    if (line.length < 2) continue;
+    let dangling = 0;
+
+    for (const isHead of [true, false]) {
+      const end = isHead ? line[0] : line[line.length - 1];
+      // 1) 吸到最近的其它河道
+      let hit = { d: Infinity, x: 0, z: 0 };
+      for (let j = 0; j < geo.length; j += 1) {
+        if (j === i) continue;
+        const q = nearestOnPolyline(end[0], end[1], geo[j]);
+        if (q.d < hit.d) hit = q;
+      }
+      if (hit.d <= WATER_JOIN) {
+        if (hit.d > 0.4) {
+          if (isHead) line.unshift([hit.x, hit.z]);
+          else line.push([hit.x, hit.z]);
+        }
+        snapped += 1;
+        continue;
+      }
+      // 2) 延长到护城河
+      const moat = nearestOnPolyline(end[0], end[1], outlinePts);
+      if (moat.d <= WATER_MOAT_REACH) {
+        let dx = moat.x - end[0];
+        let dz = moat.z - end[1];
+        let len = Math.hypot(dx, dz);
+        if (len < 0.5) {
+          // 端点已经落在城墙上（补画的历史河道）：顺着河道走向伸进护城河
+          const prev = isHead ? line[1] : line[line.length - 2];
+          dx = end[0] - prev[0];
+          dz = end[1] - prev[1];
+          len = Math.hypot(dx, dz) || 1;
+        }
+        const reach = moat.d <= 0.5 ? MOAT_EMBED : len + MOAT_EMBED;
+        const tip = [end[0] + (dx / len) * reach, end[1] + (dz / len) * reach];
+        if (isHead) line.unshift(tip);
+        else line.push(tip);
+        extended += 1;
+        continue;
+      }
+      dangling += 1;
+    }
+
+    if (dangling > 0 || lineLen(line) < WATER_MIN_LEN) {
+      dropped += 1;
+      continue;
+    }
+    out.push(roundLine(line));
+  }
+
+  console.log(
+    `[水系] 收口：吸附交汇 ${snapped} 处，接入护城河 ${extended} 处，` +
+      `剔除断头/过短河道 ${dropped} 条，保留 ${out.length} 条`,
+  );
+  return out;
+}
+
+/**
+ * 河道折线平滑（Chaikin，保留首尾端点）。
+ * OSM 的河道在高密度城区常是一串 90° 折线，12m 宽铺出来就是"楼梯形"水带。
+ * 两轮圆角只改变转角形态，起终点与走向不变，河仍落在原来的位置。
+ */
+function smoothWater(line, iterations = 2) {
+  let pts = line.map((p) => [p[0], p[1]]);
+  for (let it = 0; it < iterations; it += 1) {
+    if (pts.length < 3) break;
+    const out = [pts[0]];
+    for (let i = 0; i < pts.length - 1; i += 1) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      out.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      out.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    out.push(pts[pts.length - 1]);
+    pts = out;
+  }
+  return roundLine(pts);
+}
+
+if (waterways.length > 0) {
+  const closed = closeWaterNetwork(trimmedWaterways);
+  waterways.length = 0;
+  waterways.push(...closed.map((line) => smoothWater(line, 2)));
 }
 
 /* ---------------- 2b. 城外水道：山塘河（阊门—虎丘） ---------------- */

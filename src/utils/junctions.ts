@@ -84,6 +84,12 @@ export interface CrosswalkOptions {
   roadWidth: number;
   /** 斑马线到路口的距离（米） */
   setback: number;
+  /**
+   * 过街方向可用半宽（米）。返回 0 表示这里不铺。
+   * 路口节点会把相交的每一条路的走向都收进来，若照着支路走向铺 22m 宽的条纹带，
+   * 条纹会整条甩到路缘之外的地面上——必须按实际路面量出可铺宽度。
+   */
+  widthAt?: (x: number, z: number, nx: number, nz: number) => number;
 }
 
 /**
@@ -95,7 +101,7 @@ export function buildCrosswalkGeometry(
   y: number,
   options: CrosswalkOptions = { roadWidth: 24, setback: 15 },
 ): Float32Array {
-  const { roadWidth, setback } = options;
+  const { roadWidth, setback, widthAt } = options;
   const half = roadWidth / 2;
   const positions: number[] = [];
   const BAR_W = 0.55;
@@ -120,19 +126,21 @@ export function buildCrosswalkGeometry(
         const cz = junction.z + dz * setback * sign;
         const nx = -dz;
         const nz = dx;
+        const bandHalf = widthAt ? Math.min(half, widthAt(cx, cz, nx, nz, dx, dz)) : half;
+        if (bandHalf < 3) continue;
         const center = ((BARS - 1) * (BAR_W + BAR_GAP)) / 2;
 
         for (let k = 0; k < BARS; k += 1) {
           const off = k * (BAR_W + BAR_GAP) - center;
-          // 沿行车方向 ±BAR_W/2，沿过街方向 ±half
-          const ax = cx + dx * (off - BAR_W / 2) - nx * half;
-          const az = cz + dz * (off - BAR_W / 2) - nz * half;
-          const bx = cx + dx * (off - BAR_W / 2) + nx * half;
-          const bz = cz + dz * (off - BAR_W / 2) + nz * half;
-          const cxp = cx + dx * (off + BAR_W / 2) + nx * half;
-          const czp = cz + dz * (off + BAR_W / 2) + nz * half;
-          const dxp = cx + dx * (off + BAR_W / 2) - nx * half;
-          const dzp = cz + dz * (off + BAR_W / 2) - nz * half;
+          // 沿行车方向 ±BAR_W/2，沿过街方向 ±bandHalf（量出来的实际路面半宽）
+          const ax = cx + dx * (off - BAR_W / 2) - nx * bandHalf;
+          const az = cz + dz * (off - BAR_W / 2) - nz * bandHalf;
+          const bx = cx + dx * (off - BAR_W / 2) + nx * bandHalf;
+          const bz = cz + dz * (off - BAR_W / 2) + nz * bandHalf;
+          const cxp = cx + dx * (off + BAR_W / 2) + nx * bandHalf;
+          const czp = cz + dz * (off + BAR_W / 2) + nz * bandHalf;
+          const dxp = cx + dx * (off + BAR_W / 2) - nx * bandHalf;
+          const dzp = cz + dz * (off + BAR_W / 2) - nz * bandHalf;
           quad(ax, az, bx, bz, cxp, czp, dxp, dzp);
         }
       }

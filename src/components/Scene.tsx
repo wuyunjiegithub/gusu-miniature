@@ -165,7 +165,7 @@ export function Scene() {
       )}
       {shown('roads') && <Roads />}
       {shown('markings') && <RoadMarkings />}
-      <Transit />
+      <Transit visible={shown('transit')} />
       {shown('bridges') && <CanalBridges />}
       {shown('banks') && <CanalEmbankment />}
       {shown('boats') && <CanalBoats />}

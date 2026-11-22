@@ -8,14 +8,85 @@ import { buildCrosswalkGeometry, findJunctions, type Junction } from '../utils/j
 const ROAD_Y = 1.38;
 /**
  * 标线贴片离路面的微小抬升，避免与路面共面闪烁。
- * 必须严格高于主干道路面，否则整个斑马线会被路面深度挡住——
- * 以前这里是 1.36 < 1.38，斑马线其实一直埋在路面下面看不见。
+ * 必须严格高于主干道路面（含重叠分层的最高层 1.38+0.03），
+ * 否则斑马线会被路面深度挡住——以前这里是 1.36 < 1.38，斑马线一直埋在路面下。
  */
-const DECAL_Y = ROAD_Y + 0.06;
+const DECAL_Y = ROAD_Y + 0.1;
 /** 斑马线距路口中心的距离 */
 const CROSSWALK_SETBACK = 15;
 /** 主干道宽度（与 Roads 的 MAJOR_WIDTH 一致） */
 const MAJOR_WIDTH = 26;
+
+/**
+ * 斑马线可铺宽度探针：
+ *   1) 先确认这里确实有一条与"进口道方向"同向的主路——路口节点会把相交的
+ *      每条路走向都收进来，照支路走向铺条纹会整条斜插到路外；
+ *   2) 再沿过街方向逐点量路面，碰到路缘就停。
+ * 两步都通过才返回可铺半宽，0 表示这里不铺。
+ */
+function makeWidthProbe(lines: [number, number][][], half: number) {
+  const CELL = 40;
+  const key = (ix: number, iz: number) => ix * 100000 + iz;
+  const grid = new Map<number, number[]>();
+  const segs: Array<[number, number, number, number]> = [];
+  for (const line of lines) {
+    for (let i = 0; i < line.length - 1; i += 1) {
+      const [ax, az] = line[i];
+      const [bx, bz] = line[i + 1];
+      if (Math.hypot(bx - ax, bz - az) < 0.4) continue;
+      const id = segs.push([ax, az, bx, bz]) - 1;
+      for (let ix = Math.floor(Math.min(ax, bx) / CELL); ix <= Math.floor(Math.max(ax, bx) / CELL); ix += 1)
+        for (let iz = Math.floor(Math.min(az, bz) / CELL); iz <= Math.floor(Math.max(az, bz) / CELL); iz += 1) {
+          const k = key(ix, iz);
+          let bucket = grid.get(k);
+          if (!bucket) grid.set(k, (bucket = []));
+          bucket.push(id);
+        }
+    }
+  }
+  const limit = half - 0.6;
+  /** 最近路段的下标与距离，dist > limit 视为不在路面上 */
+  const nearest = (x: number, z: number) => {
+    let bestD = Infinity;
+    let bestId = -1;
+    for (let ix = Math.floor((x - limit) / CELL); ix <= Math.floor((x + limit) / CELL); ix += 1) {
+      for (let iz = Math.floor((z - limit) / CELL); iz <= Math.floor((z + limit) / CELL); iz += 1) {
+        const bucket = grid.get(key(ix, iz));
+        if (!bucket) continue;
+        for (const id of bucket) {
+          const [ax, az, bx, bz] = segs[id];
+          const dx = bx - ax;
+          const dz = bz - az;
+          const l2 = dx * dx + dz * dz;
+          let t = l2 > 0 ? ((x - ax) * dx + (z - az) * dz) / l2 : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const d = Math.hypot(x - ax - t * dx, z - az - t * dz);
+          if (d < bestD) {
+            bestD = d;
+            bestId = id;
+          }
+        }
+      }
+    }
+    return bestId < 0 || bestD > limit ? null : segs[bestId];
+  };
+
+  return (x: number, z: number, nx: number, nz: number, dx: number, dz: number) => {
+    const seg = nearest(x, z);
+    if (!seg) return 0;
+    const len = Math.hypot(seg[2] - seg[0], seg[3] - seg[1]) || 1;
+    const ux = (seg[2] - seg[0]) / len;
+    const uz = (seg[3] - seg[1]) / len;
+    // 方向差超过约 35° 说明这条"进口道"在这里其实不存在
+    if (Math.abs(ux * dx + uz * dz) < 0.82) return 0;
+    let reach = 0;
+    for (let s = 0.5; s <= half; s += 0.5) {
+      if (!nearest(x + nx * s, z + nz * s) || !nearest(x - nx * s, z - nz * s)) break;
+      reach = s;
+    }
+    return reach;
+  };
+}
 
 /** 红绿灯杆高与信号灯头尺寸 */
 const POLE_HEIGHT = 6.4;
@@ -49,21 +120,28 @@ export function RoadMarkings() {
     return kept;
   }, [roads]);
 
+  const onMajor = useMemo(
+    () => (roads ? makeWidthProbe(roads.major, MAJOR_WIDTH / 2) : null),
+    [roads],
+  );
+
   const crosswalkGeo = useMemo(() => {
-    if (junctions.length === 0) return null;
+    if (junctions.length === 0 || !onMajor) return null;
     const positions = buildCrosswalkGeometry(junctions, DECAL_Y, {
       roadWidth: MAJOR_WIDTH - 4,
       setback: CROSSWALK_SETBACK,
+      widthAt: onMajor,
     });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.computeVertexNormals();
     return geo;
-  }, [junctions]);
+  }, [junctions, onMajor]);
 
   /** 每个进口道一组信号灯：位置 + 朝向 + 相位（红/绿） */
   const signals = useMemo(() => {
     const items: { x: number; z: number; rot: number; green: boolean }[] = [];
+    if (!onMajor) return items;
     junctions.forEach((junction, i) => {
       junction.dirs.forEach(([dx, dz], k) => {
         if (items.length >= 760) return;
@@ -72,6 +150,9 @@ export function RoadMarkings() {
         const nz = dx;
         const x = junction.x + dx * CROSSWALK_SETBACK + nx * (MAJOR_WIDTH / 2 - 2.5);
         const z = junction.z + dz * CROSSWALK_SETBACK + nz * (MAJOR_WIDTH / 2 - 2.5);
+        // 只在真正存在这条进口道（斑马线可铺）时才立灯，否则灯杆会飘在空地或路中间
+        if (onMajor(junction.x + dx * CROSSWALK_SETBACK, junction.z + dz * CROSSWALK_SETBACK, nx, nz, dx, dz) <= 0)
+          return;
         items.push({
           x,
           z,
@@ -81,7 +162,7 @@ export function RoadMarkings() {
       });
     });
     return items;
-  }, [junctions]);
+  }, [junctions, onMajor]);
 
   const poleRef = useRef<THREE.InstancedMesh>(null);
   const redRef = useRef<THREE.InstancedMesh>(null);

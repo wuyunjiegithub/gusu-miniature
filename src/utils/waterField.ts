@@ -17,8 +17,18 @@ import { pointInRing } from './geo';
  */
 
 /** 与 WaterSystem 的水面参数保持一致 */
-export const CANAL_HALF = 15;
-export const CANAL_Y = 2.4;
+/**
+ * 城内河道半宽（米）。苏州古城内的河多是 5~12m 的窄河，
+ * 早期按 30m 宽铺出来像一条条江，既压住街区又让桥长得离谱；
+ * 收到 12m 后与平江路、山塘街模型内河尺度一致。
+ */
+export const CANAL_HALF = 6;
+/**
+ * 城内河面标高。原来放在 2.4m（高于路面 1.3m），俯视就是一条架在空中的
+ * 蓝色水槽；降到 0.35m 后水面在街道以下，桥面、驳岸、沿河街巷的高低关系
+ * 才符合"水在街面下、桥在街面上"的常识。
+ */
+export const CANAL_Y = 0.35;
 export const MOAT_INNER = 4.6;
 export const MOAT_OUTER = MOAT_INNER + 120;
 export const MOAT_Y = 1.4;

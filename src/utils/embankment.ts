@@ -6,13 +6,13 @@ import type { LocalPoint2 } from '../types';
  * 城内运河两侧加石砌驳岸——压顶石条、临水竖面、陆侧裙墙，并按固定间距布置
  * 河埠头（入水石阶）与系船石，全部合并为一个 BufferGeometry（1 draw call）。
  *
- * 高度与 WaterSystem / bridges 保持一致：水面 2.4m、河道半宽 15m。
+ * 高度与 WaterSystem / bridges 保持一致：水面 0.35m、河道半宽 6m（12m 河宽）。
  */
 
-/** 河道半宽（与 WaterSystem 的 30m 河宽一致） */
-export const CANAL_HALF = 15;
-/** 水面高度（与 WaterSystem / bridges 一致） */
-export const CANAL_WATER_Y = 2.4;
+/** 与 waterField.ts 的 CANAL_HALF 保持一致（12m 河宽） */
+export const CANAL_HALF = 6;
+/** 水面高度（与 WaterSystem / waterField 一致）：街面以下 0.35m */
+export const CANAL_WATER_Y = 0.35;
 
 /** 压顶顶面：高出水面 14cm，形成清晰的水岸线 */
 const COPING_Y = CANAL_WATER_Y + 0.14;

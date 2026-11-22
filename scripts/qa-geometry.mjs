@@ -157,7 +157,7 @@ for (const r of [...onRoad].sort((a, b) => b.over - a.over).slice(0, 12)) {
 }
 
 /* ---------- 3. 道路入水 ---------- */
-const CANAL_HALF = 15;
+const CANAL_HALF = 6;
 const MOAT = 120;
 const waterHit = (x, z) => {
   for (const line of canals) {

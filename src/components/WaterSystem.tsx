@@ -25,8 +25,8 @@ const MOAT_INSET = 4.6;
 const MOAT_BANK_Y = 1.52;
 const MOAT_BANK_WIDTH = 3.2;
 
-const CANAL_WIDTH = 30;
-const CANAL_Y = 2.4;
+const CANAL_WIDTH = 12;
+const CANAL_Y = 0.35;
 
 /** 城外水道：与山塘街模型内河同高，水面低于街面约 1.2m */
 const SHANTANG_Y = -1.3;

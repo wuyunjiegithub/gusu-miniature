@@ -86,7 +86,7 @@ function makeGlowGeometry(spots: Spot[], y: number): THREE.BufferGeometry {
 }
 
 /** 城内河道 / 护城河水面高度（略高于水面，避免深度冲突） */
-const CANAL_REFLECT_Y = 2.43;
+const CANAL_REFLECT_Y = 0.38;
 const MOAT_REFLECT_Y = 1.43;
 /** 山塘河水面（与 WaterSystem 的 SHANTANG_Y 一致） */
 const SHANTANG_REFLECT_Y = -1.27;

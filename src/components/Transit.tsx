@@ -65,7 +65,7 @@ function clipToLand(line: LocalPoint2[]): LocalPoint2[][] {
  * 按线路官方色画成带状线，站点用白色小圆柱表示。
  * 沙盘尺度下不做高架结构，只表达线位与换乘节点。
  */
-export function Transit() {
+export function Transit({ visible = true }: { visible?: boolean }) {
   const data = useTransit();
   const stationRef = useRef<THREE.InstancedMesh>(null);
 
@@ -110,7 +110,7 @@ export function Transit() {
   if (!data) return null;
 
   return (
-    <group>
+    <group visible={visible}>
       {lines.map((line, i) => (
         <mesh key={`${line.color}-${i}`} geometry={line.geometry} frustumCulled={false}>
           <meshStandardMaterial

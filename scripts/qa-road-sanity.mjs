@@ -28,7 +28,7 @@ const ROAD_HALF = { major: 13, minor: 5.5 };
 const CITY = scene.cityOutline;
 const MOAT_IN = 4.6;
 const MOAT_OUT = 124.6;
-const CANAL_HALF = 15;
+const CANAL_HALF = 6;
 const SHANTANG_HALF = 4;
 const SHANGTANG_HALF = 13;
 
@@ -60,11 +60,11 @@ const grid = new Map();
 const segs = [];
 const gkey = (cx, cz) => `${cx},${cz}`;
 for (const kind of ['major', 'minor']) {
-  for (const line of roads[kind]) {
+  roads[kind].forEach((line, li) => {
     for (let i = 0; i < line.length - 1; i++) {
       const a = line[i];
       const b = line[i + 1];
-      const seg = { a, b, half: ROAD_HALF[kind], kind };
+      const seg = { a, b, half: ROAD_HALF[kind], kind, line: li };
       const id = segs.length;
       segs.push(seg);
       for (let cx = Math.floor(Math.min(a[0], b[0]) / CELL); cx <= Math.floor(Math.max(a[0], b[0]) / CELL); cx++) {
@@ -76,7 +76,7 @@ for (const kind of ['major', 'minor']) {
         }
       }
     }
-  }
+  });
 }
 const nearbySegs = (x, z, radius = 40) => {
   const out = [];
@@ -148,7 +148,19 @@ if (groups['greater-streets-*'].length > 0) {
   const consumed = rawNames.length > 0; // 占位，实际检查在下方通过 build-roads 源码判断
   console.log(`[注意] greater-streets 分块存在 ${groups['greater-streets-*'].length} 个，共 ${await (async () => { let n = 0; for (const name of groups['greater-streets-*']) n += (await j(`data/raw/${name}`)).elements?.length ?? 0; return n; })()} 条 way`);
 }
-gate('道路完整性：输出折线数下限', roads.major.length + roads.minor.length, { min: 4000, note: '路网不应灾难性丢失' });
+const roadLengthKm = ['major', 'minor'].reduce((sum, kind) => {
+  for (const line of roads[kind]) {
+    for (let i = 1; i < line.length; i += 1) {
+      sum += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]);
+    }
+  }
+  return sum;
+}, 0) / 1000;
+console.log(`路网总里程 ${roadLengthKm.toFixed(0)} km`);
+// 用总里程而不是折线数做门禁：清理孤立碎段/假环会减少条数，但总里程不应崩塌。
+// 下限 900：build-roads 输出前会裁掉"同一路段被画了两遍"的重合整线（约 80km），
+// 这些线的路面本来就完全压在另一条路上，裁掉不影响可见路网，但会拉低中心线里程。
+gate('道路完整性：路网总里程(km)', roadLengthKm, { min: 900, note: '路网不应灾难性丢失' });
 
 /* ---------- C2 建筑压路 ---------- */
 console.log('\n========== C2 建筑压路（真实路面半宽） ==========');
@@ -206,6 +218,8 @@ const inWater = (x, z) => waterLines.some((line, li) => {
   return false;
 });
 const inMoat = (x, z) => {
+  // 护城河在城墙环外侧；城内哪怕离环线很近也不是水面
+  if (pointInRing(CITY, x, z)) return false;
   let d = Infinity;
   for (let i = 0; i < CITY.length; i++) d = Math.min(d, distSeg(x, z, CITY[i], CITY[(i + 1) % CITY.length]));
   return d > MOAT_IN && d < MOAT_OUT;
@@ -343,6 +357,137 @@ for (const e of endpoints) {
 }
 console.log(`悬空端点 ${dangling} / 总端点 ${endpoints.length}`);
 console.log(`  城内 ${danglingByArea.inner} / 城外近 ${danglingByArea['outer-near']} / 城外远 ${danglingByArea['outer-far']}`);
+
+/* ---------- C7 尖头折返（两条臂夹角过小 = U 形针尖） ---------- */
+console.log('\n========== C7 尖头折返 ==========');
+const armAngleDeg = (a, b, c) => {
+  const ux = a[0] - b[0];
+  const uz = a[1] - b[1];
+  const vx = c[0] - b[0];
+  const vz = c[1] - b[1];
+  const lu = Math.hypot(ux, uz) || 1;
+  const lv = Math.hypot(vx, vz) || 1;
+  const dot = (ux * vx + uz * vz) / (lu * lv);
+  return (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI;
+};
+let hairpins = 0;
+const hairpinSamples = [];
+/** 跳过 <1.5m 的微段，避免舍入抖动被当成折返；端点本身也要参与（以前漏掉了贴着线头的折返） */
+const farNeighbor = (line, i, dir) => {
+  let j = i + dir;
+  while (j >= 0 && j < line.length) {
+    if (Math.hypot(line[j][0] - line[i][0], line[j][1] - line[i][1]) >= 1.5) return line[j];
+    j += dir;
+  }
+  return null;
+};
+for (const [kind, lines] of Object.entries({ major: roads.major, minor: roads.minor })) {
+  for (const line of lines) {
+    for (let i = 1; i < line.length - 1; i += 1) {
+      const a = farNeighbor(line, i, -1);
+      const c = farNeighbor(line, i, 1);
+      if (!a || !c) continue;
+      const ang = armAngleDeg(a, line[i], c);
+      if (ang <= 12) {
+        hairpins += 1;
+        if (hairpinSamples.length < 8) hairpinSamples.push({ kind, ang, p: line[i] });
+      }
+    }
+  }
+}
+console.log(`折返顶点（≤12°）${hairpins} 个`);
+for (const s of hairpinSamples) {
+  console.log(`  ${s.kind} (${s.p[0].toFixed(0)},${s.p[1].toFixed(0)}) 夹角 ${s.ang.toFixed(1)}°`);
+}
+gate('尖头折返顶点（≤12°）', hairpins, { max: 0, note: '折返点会把 26m 路面铺成一根针' });
+
+/* ---------- C8 窄闭环（周长 ≈ 2×直径 = 去回两幅贴在一起） ---------- */
+console.log('\n========== C8 窄闭环 ==========');
+let narrowLoops = 0;
+const narrowLoopSamples = [];
+for (const [kind, lines] of Object.entries({ major: roads.major, minor: roads.minor })) {
+  for (const line of lines) {
+    if (line.length < 4) continue;
+    const head = line[0];
+    const tail = line.at(-1);
+    if (Math.hypot(head[0] - tail[0], head[1] - tail[1]) > 3) continue;
+    let len = 0;
+    let farD = -1;
+    for (let i = 0; i < line.length; i += 1) {
+      if (i > 0) len += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]);
+      farD = Math.max(farD, Math.hypot(line[i][0] - head[0], line[i][1] - head[1]));
+    }
+    if (len / (2 * Math.max(farD, 1)) <= 1.35) {
+      narrowLoops += 1;
+      if (narrowLoopSamples.length < 8) narrowLoopSamples.push({ kind, len, farD, p: head });
+    }
+  }
+}
+console.log(`窄闭环 ${narrowLoops} 个`);
+for (const s of narrowLoopSamples) {
+  console.log(`  ${s.kind} (${s.p[0].toFixed(0)},${s.p[1].toFixed(0)}) 周长 ${s.len.toFixed(0)}m 直径 ${s.farD.toFixed(0)}m`);
+}
+gate('窄闭环（去回两幅贴在一起）', narrowLoops, { max: 0, note: '应取主干道，不保留假环' });
+
+/* ---------- C9 孤立碎段 ---------- */
+console.log('\n========== C9 孤立碎段 ==========');
+const connectedToOther = (kind, li, p) => {
+  for (const id of nearbySegs(p[0], p[1], 12)) {
+    const s = segs[id];
+    if (s.kind === kind && s.line === li) continue;
+    if (distSeg(p[0], p[1], s.a, s.b) <= 6) return true;
+  }
+  return false;
+};
+let tinyFragments = 0;
+const tinySamples = [];
+for (const [kind, lines] of Object.entries({ major: roads.major, minor: roads.minor })) {
+  lines.forEach((line, li) => {
+    if (line.length < 2) {
+      tinyFragments += 1;
+      return;
+    }
+    let len = 0;
+    for (let i = 1; i < line.length; i += 1) {
+      len += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]);
+    }
+    if (len >= 30) return;
+    if (connectedToOther(kind, li, line[0]) || connectedToOther(kind, li, line.at(-1))) return;
+    tinyFragments += 1;
+    if (tinySamples.length < 8) tinySamples.push({ kind, len, p: line[0] });
+  });
+}
+console.log(`孤立碎段（<30m 且两端不接路）${tinyFragments} 条`);
+for (const s of tinySamples) {
+  console.log(`  ${s.kind} (${s.p[0].toFixed(0)},${s.p[1].toFixed(0)}) 长 ${s.len.toFixed(0)}m`);
+}
+gate('孤立碎段（<30m 且两端不接路）', tinyFragments, { max: 0, note: '不能只留一小段、都不连通' });
+
+/* ---------- C10 水面上的转弯 ---------- */
+console.log('\n========== C10 水面上的转弯 ==========');
+let wetTurns = 0;
+const wetTurnSamples = [];
+for (const [kind, lines] of Object.entries({ major: roads.major, minor: roads.minor })) {
+  for (const line of lines) {
+    for (let i = 1; i < line.length - 1; i += 1) {
+      const p = line[i];
+      if (!inWater(p[0], p[1]) && !inMoat(p[0], p[1])) continue;
+      const a = farNeighbor(line, i, -1);
+      const c = farNeighbor(line, i, 1);
+      if (!a || !c) continue;
+      const dev = 180 - armAngleDeg(a, p, c);
+      if (dev >= 15) {
+        wetTurns += 1;
+        if (wetTurnSamples.length < 8) wetTurnSamples.push({ kind, dev, p });
+      }
+    }
+  }
+}
+console.log(`水面上的转弯顶点 ${wetTurns} 个`);
+for (const s of wetTurnSamples) {
+  console.log(`  ${s.kind} (${s.p[0].toFixed(0)},${s.p[1].toFixed(0)}) 转角 ${s.dev.toFixed(0)}°`);
+}
+gate('水面上的转弯', wetTurns, { max: 0, note: '桥上应直行，转弯留在岸上' });
 
 /* ---------- 汇总 ---------- */
 console.log('\n========== 问题清单（城外优先） ==========');
