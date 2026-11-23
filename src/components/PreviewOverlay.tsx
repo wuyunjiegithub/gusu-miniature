@@ -51,9 +51,6 @@ export function PreviewOverlay() {
 
   return (
     <div className="preview-overlay">
-      <div className="preview-bar preview-bar-top" />
-      <div className="preview-bar preview-bar-bottom" />
-
       <div className="preview-title">
         <strong>姑苏古城</strong>
         <span>数字沙盘</span>
