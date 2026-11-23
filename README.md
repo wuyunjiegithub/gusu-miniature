@@ -1,8 +1,16 @@
 # 姑苏古城数字沙盘
 
+![React](https://img.shields.io/badge/React-18-149eca?logo=react&logoColor=white)
+![Three.js](https://img.shields.io/badge/Three.js-0.169-black?logo=three.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-3da639)
+
 基于 OpenStreetMap 数据的苏州古城 3D 数字沙盘。约 14.2 km² 的古城肌理、2.5 万栋建筑、护城河水系、城墙城门、桥、地铁网络与 50 处景点（含 31 处国保/省保文保单位），可在浏览器中自由漫游、按四季昼夜切换、聚焦任意景点。
 
 技术栈：React 18 + Three.js 0.169 + @react-three/fiber / drei + Vite 5 + TypeScript 5.6 + zustand。
+
+![姑苏古城数字沙盘](./docs/screenshots/01-overview.jpg)
+
 
 ---
 
@@ -23,7 +31,7 @@ npm run preview       # 预览生产构建 http://127.0.0.1:4173
 ## 功能
 
 - **手动漫游**：左键旋转、右键平移、滚轮缩放；`H` 键收放侧栏；点空白返回全景。
-- **整体漫游（电影级运镜）**：底部控制条「▶ 整体漫游」启动约 1 分 30 秒的连续镜头，不是逐景点静态预览，而是完整镜头语言：高空全景环绕 → **俯冲**进古城 → 绕盘门**旋转**切角度（水陆城门/瑞光塔/吴门桥）→ 低空逐景点流畅跳转（Catmull-Rom 平滑插值）→ 拉远收束全城。`T` 开始、`空格` 暂停/继续、`Esc` 退出，支持 0.5×/1×/2× 倍速与字幕。用户拖动/点击画面即中断并交还相机控制。
+- **全屏电影预览**：`P` 开始 60 秒一镜到底的古城巡礼，`Esc` 退出。预览时侧栏、HUD、小地图与 3D 标签全部隐藏，只保留上下遮幅、片名与段落题字；播完自动还原机位与昼夜。路线：**盘门 · 水门 → 北寺塔 → 拙政园 → 狮子林 → 双塔 → 天幕俯瞰全城**，段间共享端点、Catmull-Rom 弧长采样，全程无硬切。
 - **盘门景区填充**：盘门三景后方的城内腹地（原为空地）已程序化填满 69 处白墙黛瓦院落、4 片水池与 139 棵点景树，避让水门水道与瑞光塔，与四周民居肌理衔接（`src/data/panmenCompound.ts` 可单测）。
 - **文保精细建模**：31 处国保/省保不再是统一占位体块，而是按拙政园那种读图层级程序化生成有辨识度的建筑群——园林（园墙/水池/厅堂/攒尖亭/游廊/太湖石假山/点景树）、中轴殿宇（牌坊/山门/重檐大殿/配殿/戏台/泮池）、多进宅第、楼阁式砖塔、城门城楼、太湖石峰/碑刻、近代红砖校舍与钟楼共 7 种原型；每处朝向与布景由 id 派生的确定性种子决定，同类不雷同。全部按材质合并（约 14 个 draw call、12 万顶点），四季换色。规格见 `src/data/heritageModels.ts`，几何见 `src/components/Heritage.tsx`。建筑生成阶段已按这些占地轮廓剔除脚下民居，文保独立凸显不被淹没。
 - **车道标线远近都看得见**：标线全在路面着色器里画（1300km 路网不新增几何）。此前抗锯齿宽度上限放到 0.16（横断面归一化），远处一条边线被摊成 4m 宽的渐变、不透明度被稀释到几乎为零，于是"必须拉近才看得到线"；同时斑马线贴片 `DECAL_Y=1.36` 低于主干道路面 `MAJOR_ROAD_Y=1.38`，整组斑马线一直埋在路面下。现在：上限收到 0.05、边线加宽到 0.016、虚线周期 12m→8m，远处只轻微降对比（保底 62%）并把高频虚线单独淡出（`dashFade`）以消除摩尔纹；`DECAL_Y` 抬到 1.44。
@@ -40,6 +48,20 @@ npm run preview       # 预览生产构建 http://127.0.0.1:4173
 - **LOD 三级**：近/中/远景差异化渲染细节层（斑马线、灯影等）。
 
 调试参数（仅开发环境）：`?time=night&season=winter`、`?cam=x,y,z&target=x,y,z`、`?hide=roads,banks`、`?mark=1`。
+
+---
+
+## 截图
+
+| 盘门 · 水门 | 拙政园 |
+| --- | --- |
+| ![盘门 · 水门](./docs/screenshots/03-panmen.jpg) | ![拙政园](./docs/screenshots/05-zhuozhengyuan.jpg) |
+
+| 虎丘斜塔 | 古城夜景 |
+| --- | --- |
+| ![虎丘斜塔](./docs/screenshots/06-huqiu.jpg) | ![古城夜景](./docs/screenshots/02-night.jpg) |
+
+![全屏电影预览：盘门起手，遮幅与段落题字](./docs/screenshots/07-preview.jpg)
 
 ---
 
@@ -87,7 +109,7 @@ npm run data:qa       # 只跑数据门禁（要求生成物就绪）
 ## 测试与质量门禁
 
 ```bash
-npm test              # 单元测试（Vitest，25 个用例，覆盖坐标/几何/筛选/门禁纯函数）
+npm test              # 单元测试（Vitest，67 个用例，覆盖坐标/几何/筛选/门禁纯函数）
 npm run test:watch    # 监听模式
 npm run typecheck     # tsc 类型检查
 npm run data:qa       # 数据门禁（6 项，坏数据退出码非 0）
@@ -107,7 +129,6 @@ node scripts/qa-interaction.mjs  # 搜索 / 筛选 / 小地图
 node scripts/qa-tree-road.mjs       # 树上路校验（读取运行时树位，阈值 0）
 node scripts/qa-road-sanity.mjs     # 道路体检：完整性/压路/入水/穿模/断头，按内外城分组
 node scripts/qa-panmen-compound.mjs # 盘门填充：院落/水池/树数量与零穿模校验
-node scripts/qa-tour.mjs            # 电影漫游：高空→俯冲→旋转→跳转、暂停/倍速/快捷键/中断
 node scripts/qa-model-road.mjs    # 精细模型压路（逐顶点净距，阈值 0）
 vite-node scripts/qa-water-road.ts # 路 × 水自洽（水中长段必须有桥面覆盖）
 node scripts/qa-shot.mjs         # 截图复核
@@ -137,3 +158,16 @@ node scripts/qa-shot.mjs         # 截图复核
 - **首屏启动页**：`index.html` 的静态启动页用于覆盖首帧几何计算期间的主线程锁死；数据到位并出图两帧后自动淡出。
 - **LOD 阈值**：`src/constants/geo.ts` 定义 L0/L1/L2 的相机距离阈值；斑马线从 L1 中景起就显示（路口没有斑马线时远处道路像光板带），灯杆/灯头这类近景细节仍留在 L2。
 - **WebGL / SwiftShader**：无独显环境可用 `--use-gl=angle --use-angle=swiftshader` 软件渲染（探针脚本已内置）。
+
+---
+
+## 贡献
+
+欢迎 issue / PR。提交前请至少保证 `npm run typecheck` 与 `npm test` 通过；涉及数据加工链路的改动，请一并跑 `npm run data:qa`。数据来自 OpenStreetMap（ODbL），请遵守其署名与相同方式共享要求。
+
+---
+
+## 许可证
+
+[MIT](./LICENSE) © gusu-miniature contributors
+
