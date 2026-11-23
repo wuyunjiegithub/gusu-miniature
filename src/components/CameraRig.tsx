@@ -38,13 +38,10 @@ export function CameraRig() {
   const camera = useThree((state) => state.camera);
   const controls = useThree((state) => state.controls) as unknown as ControlsLike | null;
   const selectedId = useSandTable((state) => state.selectedId);
-  const tourActive = useSandTable((state) => state.tour.active);
   const animRef = useRef<CameraAnim | null>(null);
 
   useEffect(() => {
     if (!controls) return;
-    // 整体漫游期间由 TourController 独占相机写入，聚焦逻辑让位
-    if (tourActive) return;
     // 带 cam 参数时是截图复核机位，别让"回到全景"的进场动画把它推开
     if (DEBUG_VIEW) return;
 
@@ -104,7 +101,7 @@ export function CameraRig() {
       animRef.current = null;
       controls.enabled = true;
     };
-  }, [selectedId, camera, controls, tourActive]);
+  }, [selectedId, camera, controls]);
 
   useFrame((_, delta) => {
     const anim = animRef.current;

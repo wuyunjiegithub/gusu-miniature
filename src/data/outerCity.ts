@@ -1,6 +1,7 @@
 ﻿import { sceneGeometry } from './sceneGeometry';
 import modelBounds from './model-bounds.json';
 import { HILLS } from './hills';
+import { inAnyPark } from './outerParks';
 import { lonLatToVector3, pointInRing } from '../utils/geo';
 import type { LocalPoint2 } from '../types';
 
@@ -39,7 +40,8 @@ const GRID_STEP = 110;
 const BLOCK_CAP = 26000;
 const TOWER_CAP = 90;
 
-export const TOWER_COLORS = ['#b7b5ae', '#a8acb0', '#c3bfb5', '#9ea5ac', '#b0a89b'];
+/** 现代高层幕墙：冷灰蓝玻璃，与古城暖白粉墙拉开时代差 */
+export const TOWER_COLORS = ['#9fb2c1', '#aebecb', '#8fa4b4', '#b7c4ce', '#93a7b7'];
 
 const hash = (i: number): number => {
   const v = Math.sin(i * 78.233 + 11.7) * 43758.5453;
@@ -245,6 +247,8 @@ export function buildOuterCity(roads: RoadLines): OuterCity {
         const z = gz + (hash(seed + 47 + k * 11) - 0.5) * 74;
         if (pointInRing(sceneGeometry.cityOutline, x, z)) continue;
         if (hills.some((h) => Math.hypot(x - h.x, z - h.z) < h.r)) continue;
+        // 公园范围里留空：草坪上不长房子
+        if (inAnyPark(x, z, 30)) continue;
         if (modelRects.some(([x0, x1, z0, z1]) => x >= x0 - 40 && x <= x1 + 40 && z >= z0 - 40 && z <= z1 + 40)) {
           continue;
         }
@@ -284,6 +288,7 @@ export function buildOuterCity(roads: RoadLines): OuterCity {
       const z = gz + (hash(towerSeed + 5) - 0.5) * 120;
       if (!roadNear(majorCells, x, z, 3)) continue;
       if (hills.some((h) => Math.hypot(x - h.x, z - h.z) < h.r)) continue;
+      if (inAnyPark(x, z, 30)) continue;
       if (modelRects.some(([x0, x1, z0, z1]) => x >= x0 - 40 && x <= x1 + 40 && z >= z0 - 40 && z <= z1 + 40)) {
         continue;
       }

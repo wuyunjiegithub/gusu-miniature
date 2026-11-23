@@ -13,6 +13,26 @@ const roads = JSON.parse(fs.readFileSync('public/data/roads.json', 'utf8')) as {
 };
 const index = buildRoadIndex(roads);
 
+const WATER_HALF = 6;
+const distToSeg = (x: number, z: number, a: [number, number], b: [number, number]): number => {
+  const dx = b[0] - a[0];
+  const dz = b[1] - a[1];
+  const len2 = dx * dx + dz * dz;
+  let t = len2 > 0 ? ((x - a[0]) * dx + (z - a[1]) * dz) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(x - (a[0] + t * dx), z - (a[1] + t * dz));
+};
+/** 到最近河岸的净距，>0 表示不在水面 */
+const waterClearance = (x: number, z: number): number => {
+  let best = Number.POSITIVE_INFINITY;
+  for (const line of sceneGeometry.waterways) {
+    for (let i = 0; i < line.length - 1; i += 1) {
+      best = Math.min(best, distToSeg(x, z, line[i], line[i + 1]) - WATER_HALF);
+    }
+  }
+  return best;
+};
+
 describe('resolveFootprints', () => {
   it('质心落在马路上时把院落挪开，且半宽不超过可用空间', () => {
     // 一条东西向主干道（半宽 13m），院落在路中心
@@ -53,8 +73,8 @@ describe('resolveFootprints', () => {
     const fp = resolveFootprints(sites, roads, toBlocked(modelBounds as Record<string, number[]>), {
       buffer: 2,
       gap: 3,
-      minRadius: 6,
       maxShift: 40,
+      waterways: sceneGeometry.waterways,
     });
     for (const site of sites) {
       const want = HERITAGE_FOOTPRINTS[site.id];
@@ -76,6 +96,16 @@ describe('resolveFootprints', () => {
       const fp = HERITAGE_FOOTPRINTS[h.id];
       if (!fp || fp.hidden) continue;
       if (index.clearance(fp.x, fp.z) <= fp.r) offenders.push(`${h.name}(${h.id})`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('每一处文保院落都不压河道（回归：潘世恩宅压平江路内河）', () => {
+    const offenders: string[] = [];
+    for (const h of HERITAGE_LANDMARKS) {
+      const fp = HERITAGE_FOOTPRINTS[h.id];
+      if (!fp || fp.hidden) continue;
+      if (waterClearance(fp.x, fp.z) <= fp.r) offenders.push(`${h.name}(${h.id})`);
     }
     expect(offenders).toEqual([]);
   });

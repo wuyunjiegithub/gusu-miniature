@@ -231,12 +231,21 @@ function trimOuterAtHills(line: LocalPoint2[]): LocalPoint2[] {
   return segments[0];
 }
 
+/* ---------------- 平江河已并入静态数据 ----------------
+ * 平江路精细模型内河与城市河道网的衔接（对齐中心线、南接干将河、北接临顿河）
+ * 由 scripts/build-scene-data.mjs 直接写进 scene-geometry.json 的 waterways：
+ * 这样 build-buildings 能按同一条折线剔除沿河民居，水面、驳岸、桥位、水域判定
+ * 全部共用一份数据，运行期不再手工补线（避免出现两条互不对齐的平江河）。
+ */
+
 export const sceneGeometry: SceneGeometry = {
   ...base,
-  waterways: base.waterways
-    .map(trimAtMoatInner)
-    .map(trimPanmenGate)
-    .filter((l) => !isPanmenInnerStrayWater(l)),
+  waterways: [
+    ...base.waterways
+      .map(trimAtMoatInner)
+      .map(trimPanmenGate)
+      .filter((l) => !isPanmenInnerStrayWater(l)),
+  ],
   // 上塘河（阊门—枫桥）已并入 scene-geometry.json 的 outerWaterways，
   // 不再在运行期手写：路网避让、桥位与水面渲染必须读同一条折线。
   outerWaterways: (base.outerWaterways ?? [])

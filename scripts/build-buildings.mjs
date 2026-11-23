@@ -343,7 +343,9 @@ const boxHitsLandmark = (box) => {
     [-w / 2, 0],
     [w / 2, 0],
   ].map(([u, v]) => [x + u * ca + v * sa, z - u * sa + v * ca]);
-  return inLandmark(x, z, 4) || inModelBounds(samples);
+  // 中心点在环外、但体块一角/一边探进环内的长条房屋（文庙、府学一类大院落旁的
+  // 88m 长排屋）只查中心会漏掉。9 点采样逐点判定，保证体块不与院落轮廓相交。
+  return inLandmark(x, z, 4) || samples.some(([px, pz]) => inLandmark(px, pz, 0)) || inModelBounds(samples);
 };
 
 const wayById = new Map();

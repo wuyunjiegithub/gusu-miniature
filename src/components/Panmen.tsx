@@ -46,19 +46,23 @@ const WALL_TOP = 7.5;
 const WALL_H = WALL_TOP - WALL_BASE; // 9.7m
 const WALL_HALF_T = 4; // 半厚（局部 z ±4m，总厚 8m）
 
-/** 水门 / 陆门洞在城墙局部 x 坐标（水门东、陆门西，相距约 30m） */
-const WATER_GATE_LX = 5;
+/** 水门 / 陆门洞在城墙局部 x 坐标（水门东、陆门西，相距约 28m）
+ *  水门局部 x=3 → 世界 x≈-777，正好压在 OSM 水门水道（waterway#11）上 */
+const WATER_GATE_LX = 3;
 const LAND_GATE_LX = -25;
+/** 1986 年重建的城楼就在陆门城台原址上；城楼、陆门、吴门桥须在同一条轴线上。
+ *  TOWER_LZ 取该处墙线的局部 z（墙线在盘门并非严格 z=0），城楼才正压城台。 */
+const TOWER_LX = LAND_GATE_LX;
+const TOWER_LZ = -2.4;
 
-/** 吴门桥（绝对场景坐标，南北跨护城河）
- * 护城河在盘门处：城墙线 z≈2467.8，内岸 z≈2472.4，外岸 z≈2592.4。
- * 桥必须两端真正搭到岸上（内岸之内、外岸之外），因此有效跨河长度取
- * z 2460~2604 → 全长 144m，中心 2532。真实吴门桥本体 66m，沙盘的护城河
- * 按 120m 宽建模，桥需相应加长才能不悬在河心。 */
-const BRIDGE_X = -780;
-const BRIDGE_Z_CENTER = 2532;
-const BRIDGE_HALF_LEN = 72; // 全长 144m，两端各搭岸约 12m
-const BRIDGE_WIDTH = 9;     // 石栏古桥；沙盘尺度下加宽以便看清（真实吴门桥约 4.8m）
+/** 吴门桥：与陆门同轴、沿城墙法向跨护城河（局部坐标，随城墙 group 一起旋转）。
+ *  护城河在盘门处：城墙线 z≈2467.8，内岸 z≈2472.4，外岸 z≈2592.4；
+ *  桥北端 z=2 顶在城墙南面（陆门洞口），南端 z=134 落在外岸外侧，全长 132m。
+ *  真实吴门桥本体 66m，沙盘的护城河按 120m 宽建模，桥需相应加长才能不悬在河心。 */
+const BRIDGE_LX = LAND_GATE_LX;
+const BRIDGE_Z_CENTER = 68;
+const BRIDGE_HALF_LEN = 66;
+const BRIDGE_WIDTH = 6.8;   // 要能塞进 7m 宽的陆门洞；真实吴门桥约 4.8m
 
 /** 瑞光塔（绝对场景坐标，城墙北侧城内） */
 const PAGODA_X = -722;
@@ -128,13 +132,15 @@ function arcAtX(line: LocalPoint2[], targetX: number): number {
   return s;
 }
 
-/** 城门洞：两侧门垛 + 圆弧拱顶（沿墙线切向建，再旋转到该处的实际走向） */
+/** 城门洞：两侧门垛 + 拱顶（沿墙线切向建，再旋转到该处的实际走向）
+ *  rise < hw 时是“坦拱”（水门要 9m 宽又只能 4.6m 高，半圆拱会顶到墙顶）。 */
 function pushGate(
   pos: number[],
   center: LocalPoint2,
   tangent: LocalPoint2,
   hw: number,
   spring: number,
+  rise: number,
 ): void {
   const zN = -WALL_HALF_T;
   const zS = WALL_HALF_T;
@@ -153,17 +159,17 @@ function pushGate(
   for (const u of [-hw, hw]) {
     quad(at(u, 0, zN), at(u, 0, zS), at(u, spring, zS), at(u, spring, zN));
   }
-  // 拱券：两个墙面各一条半圆环带，内侧补拱腹
+  // 拱券：两个墙面各一条拱带，内侧补拱腹；拱顶以上补墙身到墙顶
   const steps = 12;
   for (let k = 0; k < steps; k += 1) {
     const t0 = -1 + (2 * k) / steps;
     const t1 = -1 + (2 * (k + 1)) / steps;
     const u0 = t0 * hw;
     const u1 = t1 * hw;
-    const y0 = spring + Math.sqrt(Math.max(0, hw * hw - (t0 * hw) ** 2));
-    const y1 = spring + Math.sqrt(Math.max(0, hw * hw - (t1 * hw) ** 2));
+    const y0 = spring + rise * Math.sqrt(Math.max(0, 1 - t0 * t0));
+    const y1 = spring + rise * Math.sqrt(Math.max(0, 1 - t1 * t1));
     for (const z of [zN, zS]) {
-      quad(at(u0, y0, z), at(u1, y1, z), at(u1, WALL_H, z), at(u0, WALL_H, z));
+      quad(at(u0, y0, z), at(u1, y1, z), at(u1, WALL_TOP, z), at(u0, WALL_TOP, z));
     }
     quad(at(u0, y0, zN), at(u1, y1, zN), at(u1, y1, zS), at(u0, y0, zS));
   }
@@ -177,13 +183,16 @@ function wallGeometry(): THREE.BufferGeometry {
     return s;
   })();
 
-  // 门洞：[中心局部 x, 半宽, 起拱高]
-  const gates: Array<[number, number, number]> = [
-    [WATER_GATE_LX, 4.65, 5.6],
-    [LAND_GATE_LX, 3.5, 4.6],
+  // 门洞：[中心局部 x, 半宽, 起拱高, 拱矢高]
+  // 拱顶 = 起拱高 + 拱矢高，必须明显低于墙顶（局部 y=7.5），
+  // 否则水门会变成一道贯穿整面墙的豁口。水门 9.3m 宽用坦拱：
+  // 1.0 + 3.6 = 4.6m 拱顶，墙顶还剩 2.9m 砌体。
+  const gates: Array<[number, number, number, number]> = [
+    [WATER_GATE_LX, 4.65, 1.0, 3.6],
+    [LAND_GATE_LX, 3.5, 1.4, 3.2],
   ];
   const gateArcs = gates
-    .map(([x, hw, spring]) => ({ s: arcAtX(line, x), hw, spring }))
+    .map(([x, hw, spring, rise]) => ({ s: arcAtX(line, x), hw, spring, rise }))
     .sort((a, b) => a.s - b.s);
 
   const parts: THREE.BufferGeometry[] = [];
@@ -204,7 +213,7 @@ function wallGeometry(): THREE.BufferGeometry {
     const p = sliceByArc(line, s - 0.01, s + 0.01);
     const t: LocalPoint2 = [p[1][0] - p[0][0], p[1][1] - p[0][1]];
     const tl = Math.hypot(t[0], t[1]) || 1;
-    pushGate(pos, [p[0][0], p[0][1]], [t[0] / tl, t[1] / tl], g.hw, g.spring);
+    pushGate(pos, [p[0][0], p[0][1]], [t[0] / tl, t[1] / tl], g.hw, g.spring, g.rise);
   }
   const gatesGeo = new THREE.BufferGeometry();
   gatesGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -258,12 +267,13 @@ function createHipRoof(w: number, d: number, h: number): THREE.BufferGeometry {
   const hd = d / 2;
   const rh = Math.max(0, hw - hd * 0.72);
   const v = new Float32Array([
-    -hw, 0, -hd, hw, 0, -hd, rh, h, 0,
-    -hw, 0, -hd, rh, h, 0, -rh, h, 0,
-    hw, 0, hd, -hw, 0, hd, -rh, h, 0,
-    hw, 0, hd, -rh, h, 0, rh, h, 0,
-    hw, 0, -hd, hw, 0, hd, rh, h, 0,
-    -hw, 0, hd, -hw, 0, -hd, -rh, h, 0,
+    // 屋面三角形统一逆时针朝外，法线朝上；否则俯视时整片屋顶被背面剔除
+    -hw, 0, -hd, rh, h, 0, hw, 0, -hd,
+    -hw, 0, -hd, -rh, h, 0, rh, h, 0,
+    hw, 0, hd, -rh, h, 0, -hw, 0, hd,
+    hw, 0, hd, rh, h, 0, -rh, h, 0,
+    hw, 0, -hd, rh, h, 0, hw, 0, hd,
+    -hw, 0, hd, -rh, h, 0, -hw, 0, -hd,
   ]);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(v, 3));
@@ -291,7 +301,7 @@ function towerGeometries(): { wood: THREE.BufferGeometry; roof: THREE.BufferGeom
   return { wood, roof, stone: podium };
 }
 
-/* ---------------- 吴门桥（单孔石拱桥，南北走向，绝对坐标） ---------------- */
+/* ---------------- 吴门桥（单孔石拱桥，局部坐标，随城墙 group 旋转） ---------------- */
 
 function bridgeGeometry(): THREE.BufferGeometry {
   const pos: number[] = [];
@@ -304,8 +314,8 @@ function bridgeGeometry(): THREE.BufferGeometry {
   const xW = BRIDGE_WIDTH / 2;
   const bedY = -2;          // 河床
   const waterY = 1.4;       // 护城河水面
-  const deckBase = 3.2;     // 桥面在两岸的高度
-  const deckRise = 5.8;     // 桥面中央比岸高（形成缓和拱势）
+  const deckBase = 1.7;     // 桥面搭岸高度（内/外岸顶约 1.52m）
+  const deckRise = 7.3;     // 桥面中央比岸高（形成缓和拱势，桥顶约 9m）
   const archHalf = 46;      // 拱洞半跨（单孔，跨 92m 主航道）
   const archTop = 8.0;      // 拱洞顶高
   const steps = 48;
@@ -332,13 +342,13 @@ function bridgeGeometry(): THREE.BufferGeometry {
 
     // 桥面（横跨 x）
     quad(
-      [BRIDGE_X - xW, d0, z0], [BRIDGE_X - xW, d1, z1],
-      [BRIDGE_X + xW, d1, z1], [BRIDGE_X + xW, d0, z0],
+      [BRIDGE_LX - xW, d0, z0], [BRIDGE_LX - xW, d1, z1],
+      [BRIDGE_LX + xW, d1, z1], [BRIDGE_LX + xW, d0, z0],
     );
 
     // 两侧立面：拱洞段填拱顶→桥面，桥台段填河床→桥面
     for (const sx of [-1, 1]) {
-      const x = BRIDGE_X + sx * xW;
+      const x = BRIDGE_LX + sx * xW;
       if (a0 !== null && a1 !== null) {
         quad([x, a0, z0], [x, a1, z1], [x, d1, z1], [x, d0, z0]);
       } else {
@@ -349,8 +359,8 @@ function bridgeGeometry(): THREE.BufferGeometry {
     // 拱腹（拱洞内表面，横跨 x）：只在拱洞段生成
     if (a0 !== null && a1 !== null) {
       quad(
-        [BRIDGE_X - xW, a0, z0], [BRIDGE_X - xW, a1, z1],
-        [BRIDGE_X + xW, a1, z1], [BRIDGE_X + xW, a0, z0],
+        [BRIDGE_LX - xW, a0, z0], [BRIDGE_LX - xW, a1, z1],
+        [BRIDGE_LX + xW, a1, z1], [BRIDGE_LX + xW, a0, z0],
       );
     }
   }
@@ -358,7 +368,7 @@ function bridgeGeometry(): THREE.BufferGeometry {
   // 桥面两端封口
   for (const z of [BRIDGE_Z_CENTER - BRIDGE_HALF_LEN, BRIDGE_Z_CENTER + BRIDGE_HALF_LEN]) {
     const d = deckY(z);
-    quad([BRIDGE_X - xW, bedY, z], [BRIDGE_X - xW, d, z], [BRIDGE_X + xW, d, z], [BRIDGE_X + xW, bedY, z]);
+    quad([BRIDGE_LX - xW, bedY, z], [BRIDGE_LX - xW, d, z], [BRIDGE_LX + xW, d, z], [BRIDGE_LX + xW, bedY, z]);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -590,7 +600,7 @@ export function Panmen() {
             <meshStandardMaterial color={stoneDark} roughness={0.95} flatShading />
           </mesh>
         )}
-        <group position={[-10, 0, 0]}>
+        <group position={[TOWER_LX, 0, TOWER_LZ]}>
           <mesh name="panmen-tower-podium" geometry={tower.stone} castShadow receiveShadow>
             <meshStandardMaterial color={stoneDark} roughness={0.95} flatShading />
           </mesh>
@@ -601,12 +611,12 @@ export function Panmen() {
             <meshStandardMaterial color={tileColor} roughness={0.88} flatShading />
           </mesh>
         </group>
-      </group>
 
-      {/* 吴门桥（单孔石拱桥，南北跨护城河） */}
-      <mesh name="panmen-bridge" geometry={bridge} castShadow receiveShadow>
-        <meshStandardMaterial color={bridgeColor} roughness={0.94} flatShading />
-      </mesh>
+        {/* 吴门桥：与陆门同轴，沿城墙法向跨护城河（几何为局部坐标，随 group 旋转） */}
+        <mesh name="panmen-bridge" geometry={bridge} castShadow receiveShadow>
+          <meshStandardMaterial color={bridgeColor} roughness={0.94} flatShading />
+        </mesh>
+      </group>
 
       {/* 瑞光塔 */}
       <group position={[PAGODA_X, 0, PAGODA_Z]}>

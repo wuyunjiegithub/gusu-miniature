@@ -26,16 +26,17 @@ export function createHipRoofGeometry(w: number, d: number, h: number): THREE.Bu
   const rh = Math.max(0, hw - hd * 0.72);
   const geo = new THREE.BufferGeometry();
   const v = new Float32Array([
+    // 同 Panmen 城楼：屋面三角形朝外绕序，保证法线朝上，俯视不丢屋面
     // 南坡
-    -hw, 0, -hd, hw, 0, -hd, rh, h, 0,
-    -hw, 0, -hd, rh, h, 0, -rh, h, 0,
+    -hw, 0, -hd, rh, h, 0, hw, 0, -hd,
+    -hw, 0, -hd, -rh, h, 0, rh, h, 0,
     // 北坡
-    hw, 0, hd, -hw, 0, hd, -rh, h, 0,
-    hw, 0, hd, -rh, h, 0, rh, h, 0,
+    hw, 0, hd, -rh, h, 0, -hw, 0, hd,
+    hw, 0, hd, rh, h, 0, -rh, h, 0,
     // 东歇山
-    hw, 0, -hd, hw, 0, hd, rh, h, 0,
+    hw, 0, -hd, rh, h, 0, hw, 0, hd,
     // 西歇山
-    -hw, 0, hd, -hw, 0, -hd, -rh, h, 0,
+    -hw, 0, hd, -rh, h, 0, -hw, 0, -hd,
   ]);
   geo.setAttribute('position', new THREE.BufferAttribute(v, 3));
   geo.computeVertexNormals();

@@ -1,4 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber';
+import { PerspectiveCamera } from 'three';
 import { cameraPose } from '../utils/cameraPose';
 
 /**
@@ -7,17 +8,29 @@ import { cameraPose } from '../utils/cameraPose';
  */
 export function CameraPoseSync() {
   const controls = useThree((state) => state.controls) as unknown as
-    | { target: { x: number; z: number } }
+    | { target: { x: number; y: number; z: number } }
     | null;
+  const viewportHeight = useThree((state) => state.size.height);
+
   useFrame(({ camera }) => {
-    if (controls?.target) {
-      cameraPose.x = controls.target.x;
-      cameraPose.z = controls.target.z;
-    } else {
-      cameraPose.x = camera.position.x;
-      cameraPose.z = camera.position.z;
+    const target = controls?.target ?? camera.position;
+    cameraPose.x = target.x;
+    cameraPose.y = target.y;
+    cameraPose.z = target.z;
+
+    const dx = target.x - camera.position.x;
+    const dy = target.y - camera.position.y;
+    const dz = target.z - camera.position.z;
+    const distance = Math.hypot(dx, dy, dz);
+    cameraPose.distance = distance;
+
+    if (Math.hypot(dx, dz) > 0.001) {
+      cameraPose.heading = (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360;
     }
-    cameraPose.distance = camera.position.length();
+    if (camera instanceof PerspectiveCamera && viewportHeight > 0) {
+      cameraPose.metersPerPixel =
+        (2 * distance * Math.tan(camera.fov * Math.PI / 360)) / viewportHeight;
+    }
   });
   return null;
 }

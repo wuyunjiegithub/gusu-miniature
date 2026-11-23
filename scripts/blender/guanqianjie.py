@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 OUT = os.path.join(ROOT, "public", "models", "guanqianjie.glb")
 SCENE_JSON = os.path.join(ROOT, "src", "data", "scene-geometry.json")
 
-STREET_LEN = 180.0      # 样板段长度（米）
+STREET_LEN = 160.0      # 样板段长度（米）
 STREET_HALF = 9.0       # 步行街半宽
 SIDEWALK = 2.0          # 街沿人行带宽度
 BUILD_OFFSET = STREET_HALF + SIDEWALK
@@ -269,8 +269,10 @@ print(f"[guanqianjie] path_len={TOTAL_LEN:.1f} segment={S0:.1f}..{S0 + STREET_LE
       f"yaw={math.degrees(YAW):.1f}deg")
 
 # ---------------------------------------------------------------- 地面与街面
+# 整段连续铺装：观前街是步行街，横穿的支路并入街区铺装，
+# 不为路网开缺口（开缺口会把一条街切成几截、中间露出空路基）。
 
-BASE_HALF = 42.0
+BASE_HALF = 26.5        # 底板半宽：刚好包住两侧商铺（外沿约 26m）
 STEP = 3.0
 
 
@@ -298,11 +300,10 @@ walk.build("street_pave", MAT_STONE)
 
 # 街沿：抬高的石板人行带 + 收边
 curb = Builder()
+_ss = [S0 + i * STEP for i in range(int(STREET_LEN / STEP) + 1)]
 for side in (1, -1):
-    pts_a = [offset_point(s, side * STREET_HALF) for s in
-             [S0 + i * STEP for i in range(int(STREET_LEN / STEP) + 1)]]
-    pts_b = [offset_point(s, side * (STREET_HALF + SIDEWALK)) for s in
-             [S0 + i * STEP for i in range(int(STREET_LEN / STEP) + 1)]]
+    pts_a = [offset_point(s, side * STREET_HALF) for s in _ss]
+    pts_b = [offset_point(s, side * (STREET_HALF + SIDEWALK)) for s in _ss]
     poly = pts_a + pts_b[::-1]
     curb.poly_prism(poly, 0.0, 0.16)
     # 收边石
@@ -476,13 +477,13 @@ def temple_gate():
     ang = math.atan2(ty, tx)
     pos = (x0, y0)
 
-    # 街口前庭：从街段末端延伸到山门
+    # 街口前庭：从街段末端延伸到山门（收短，避免越过街口东侧的南北向道路）
     apron = Builder()
-    apron.box(-1.0, 31.0, -12.5, 12.5, -0.5, 0.04)
+    apron.box(-0.5, 17.0, -10.5, 10.5, -0.5, 0.04)
     apron.build("tm_apron", MAT_STONE, rot=ang, pos=pos)
 
     ang = ang + math.pi / 2
-    pos = (x0 + tx * 30, y0 + ty * 30)
+    pos = (x0 + tx * 8, y0 + ty * 8)
 
     plinth = Builder()
     plinth.box(-14.0, 14.0, -9.5, 9.5, -0.5, 1.0)

@@ -71,20 +71,36 @@ function makeWidthProbe(lines: [number, number][][], half: number) {
     return bestId < 0 || bestD > limit ? null : segs[bestId];
   };
 
-  return (x: number, z: number, nx: number, nz: number, dx: number, dz: number) => {
-    const seg = nearest(x, z);
-    if (!seg) return 0;
-    const len = Math.hypot(seg[2] - seg[0], seg[3] - seg[1]) || 1;
-    const ux = (seg[2] - seg[0]) / len;
-    const uz = (seg[3] - seg[1]) / len;
-    // 方向差超过约 35° 说明这条"进口道"在这里其实不存在
-    if (Math.abs(ux * dx + uz * dz) < 0.82) return 0;
-    let reach = 0;
-    for (let s = 0.5; s <= half; s += 0.5) {
-      if (!nearest(x + nx * s, z + nz * s) || !nearest(x - nx * s, z - nz * s)) break;
-      reach = s;
-    }
-    return reach;
+  return {
+    widthAt: (x: number, z: number, nx: number, nz: number, dx: number, dz: number) => {
+      const seg = nearest(x, z);
+      if (!seg) return 0;
+      const len = Math.hypot(seg[2] - seg[0], seg[3] - seg[1]) || 1;
+      const ux = (seg[2] - seg[0]) / len;
+      const uz = (seg[3] - seg[1]) / len;
+      // 方向差超过约 35° 说明这条"进口道"在这里其实不存在
+      if (Math.abs(ux * dx + uz * dz) < 0.82) return 0;
+      let reach = 0;
+      for (let s = 0.5; s <= half; s += 0.5) {
+        if (!nearest(x + nx * s, z + nz * s) || !nearest(x - nx * s, z - nz * s)) break;
+        reach = s;
+      }
+      return reach;
+    },
+    /** 吸附到路面中心线，并返回该处真实单位路向（弯道节点切线不可靠） */
+    snap: (x: number, z: number, dx: number, dz: number) => {
+      const seg = nearest(x, z);
+      if (!seg) return null;
+      const [ax, az, bx, bz] = seg;
+      const len = Math.hypot(bx - ax, bz - az) || 1;
+      const ux = (bx - ax) / len;
+      const uz = (bz - az) / len;
+      const dot = ux * dx + uz * dz;
+      if (Math.abs(dot) < 0.82) return null;
+      const t = Math.max(0, Math.min(len, (x - ax) * ux + (z - az) * uz));
+      const sign = dot < 0 ? -1 : 1;
+      return { x: ax + ux * t, z: az + uz * t, ux: ux * sign, uz: uz * sign };
+    },
   };
 }
 
@@ -120,28 +136,29 @@ export function RoadMarkings() {
     return kept;
   }, [roads]);
 
-  const onMajor = useMemo(
+  const probe = useMemo(
     () => (roads ? makeWidthProbe(roads.major, MAJOR_WIDTH / 2) : null),
     [roads],
   );
 
   const crosswalkGeo = useMemo(() => {
-    if (junctions.length === 0 || !onMajor) return null;
+    if (junctions.length === 0 || !probe) return null;
     const positions = buildCrosswalkGeometry(junctions, DECAL_Y, {
       roadWidth: MAJOR_WIDTH - 4,
       setback: CROSSWALK_SETBACK,
-      widthAt: onMajor,
+      widthAt: probe.widthAt,
+      snap: probe.snap,
     });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.computeVertexNormals();
     return geo;
-  }, [junctions, onMajor]);
+  }, [junctions, probe]);
 
   /** 每个进口道一组信号灯：位置 + 朝向 + 相位（红/绿） */
   const signals = useMemo(() => {
     const items: { x: number; z: number; rot: number; green: boolean }[] = [];
-    if (!onMajor) return items;
+    if (!probe) return items;
     junctions.forEach((junction, i) => {
       junction.dirs.forEach(([dx, dz], k) => {
         if (items.length >= 760) return;
@@ -151,7 +168,7 @@ export function RoadMarkings() {
         const x = junction.x + dx * CROSSWALK_SETBACK + nx * (MAJOR_WIDTH / 2 - 2.5);
         const z = junction.z + dz * CROSSWALK_SETBACK + nz * (MAJOR_WIDTH / 2 - 2.5);
         // 只在真正存在这条进口道（斑马线可铺）时才立灯，否则灯杆会飘在空地或路中间
-        if (onMajor(junction.x + dx * CROSSWALK_SETBACK, junction.z + dz * CROSSWALK_SETBACK, nx, nz, dx, dz) <= 0)
+        if (probe.widthAt(junction.x + dx * CROSSWALK_SETBACK, junction.z + dz * CROSSWALK_SETBACK, nx, nz, dx, dz) <= 0)
           return;
         items.push({
           x,
@@ -162,7 +179,7 @@ export function RoadMarkings() {
       });
     });
     return items;
-  }, [junctions, onMajor]);
+  }, [junctions, probe]);
 
   const poleRef = useRef<THREE.InstancedMesh>(null);
   const redRef = useRef<THREE.InstancedMesh>(null);

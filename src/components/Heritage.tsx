@@ -217,6 +217,27 @@ function rockery(b: Builder, cx: number, cz: number, spread: number, count: numb
   }
 }
 
+/** 瑞云峰：瘦皱漏透的太湖石峰（错落多棱柱 + 穿孔感的分叉），k 为整体缩放 */
+function ruiyunfengRock(b: Builder, x: number, z: number, rng: () => number, k = 1) {
+  b.prism('stone', 3.2 * k, 3.8 * k, 1.2, 8, x, BASE_TOP, z, 0.3);
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2;
+    const h = (3.4 + rng() * 3.2) * k;
+    b.prism(
+      'rock',
+      (0.7 + rng()) * k,
+      (1.8 + rng() * 1.2) * k,
+      h,
+      6,
+      x + Math.cos(a) * (1.2 + rng() * 1.4) * k,
+      BASE_TOP + 1.2,
+      z + Math.sin(a) * (1.2 + rng() * 1.4) * k,
+      rng() * Math.PI,
+    );
+  }
+  b.prism('rock', 0.6 * k, 1.6 * k, 6.5 * k, 6, x + 0.3 * k, BASE_TOP + 1.2, z - 0.2 * k, 0.4);
+}
+
 /** 水池：石岸 + 水面（+ 小岛） */
 function pond(b: Builder, x: number, z: number, rx: number, rz: number, rng: () => number) {
   b.disc('stone', rx + 1.1, 0.22, x, BASE_TOP, z, 20, rz / rx);
@@ -401,9 +422,9 @@ function buildResidence(b: Builder, spec: HeritageModelSpec, rng: () => number) 
       doubleEave: i === 1,
     });
     avoid.push([0, hz, r * 0.35]);
-    // 厢房（多进民居的左右配房）
+    // 厢房（多进民居的左右配房）；西侧留给宅园，有水池时只建东厢房
     if (i < courts && r > 15) {
-      for (const sx of [-1, 1]) {
+      for (const sx of spec.pond ? [1] : [-1, 1]) {
         const xx = sx * r * 0.6;
         b.box('plaster', r * 0.16, 3.6, r * 0.42, xx, BASE_TOP, hz - r * 0.12);
         b.roof('tile', r * 0.2, r * 0.46, 1.2, xx, BASE_TOP + 3.6, hz - r * 0.12);
@@ -411,14 +432,20 @@ function buildResidence(b: Builder, spec: HeritageModelSpec, rng: () => number) 
     }
   }
 
-  // 宅园（织造署西花园）
+  // 宅园（织造署西花园）：水池收进西侧空地，避开厅堂与厢房
   if (spec.pond) {
-    pond(b, -r * 0.42, -r * 0.38, r * 0.24, r * 0.2, rng);
-    avoid.push([-r * 0.42, -r * 0.38, r * 0.3]);
+    pond(b, -r * 0.57, -r * 0.51, r * 0.16, r * 0.12, rng);
+    avoid.push([-r * 0.57, -r * 0.51, r * 0.29]);
   }
   if (spec.rockery) {
-    rockery(b, r * 0.1, -r * 0.45, r * 0.18, spec.rockery === 2 ? 9 : 4, rng);
-    avoid.push([r * 0.1, -r * 0.45, r * 0.24]);
+    if (spec.rockery === 2) {
+      // 主景即瑞云峰（见 MERGED_HERITAGE_IDS），独立成院会与厅堂/水池叠压
+      ruiyunfengRock(b, -r * 0.62, -r * 0.1, rng, 0.8);
+      avoid.push([-r * 0.62, -r * 0.1, r * 0.3]);
+    } else {
+      rockery(b, r * 0.1, -r * 0.45, r * 0.18, 4, rng);
+      avoid.push([r * 0.1, -r * 0.45, r * 0.24]);
+    }
   }
 
   trees(b, scatterTrees(r, 6, rng, avoid), rng);
@@ -474,25 +501,7 @@ function buildRock(b: Builder, spec: HeritageModelSpec, rng: () => number) {
     b.box('dark', 3.2, 7.0, 0.9, 0, BASE_TOP + 2.3, 0);
     b.roof('tile', 4.6, 1.8, 1.2, 0, BASE_TOP + 9.3, 0);
   } else {
-    // 瑞云峰：瘦皱漏透的太湖石峰（错落多棱柱 + 穿孔感的分叉）
-    b.prism('stone', 3.2, 3.8, 1.2, 8, 0, BASE_TOP, 0, 0.3);
-    const rng2 = rng;
-    for (let i = 0; i < 6; i += 1) {
-      const a = (i / 6) * Math.PI * 2;
-      const h = 5 + rng2() * 5;
-      b.prism(
-        'rock',
-        0.7 + rng2(),
-        1.8 + rng2() * 1.2,
-        h,
-        6,
-        Math.cos(a) * (1.2 + rng2() * 1.4),
-        BASE_TOP + 1.2,
-        Math.sin(a) * (1.2 + rng2() * 1.4),
-        rng2() * Math.PI,
-      );
-    }
-    b.prism('rock', 0.6, 1.6, 6.5, 6, 0.3, BASE_TOP + 1.2, -0.2, 0.4);
+    ruiyunfengRock(b, 0, 0, rng);
   }
 }
 
@@ -573,6 +582,13 @@ function mergeBuckets(buckets: Buckets): Partial<Record<MatKey, THREE.BufferGeom
   return out;
 }
 
+/**
+ * 已在其他院落内部一并表现的文保：瑞云峰位于织造署西花园内，
+ * 独立圆台+石峰会与织造署的厅堂、厢房、水池叠压，改为在 buildResidence 的宅园里出石峰。
+ * 标签与镜头仍读 heritage-footprints.json 的锚点。
+ */
+const MERGED_HERITAGE_IDS = new Set(['ruiyunfeng']);
+
 export function Heritage() {
   const season = useSandTable((state) => state.season);
   const look = SEASON_LOOKS[season];
@@ -581,6 +597,7 @@ export function Heritage() {
     const buckets: Buckets = {};
     for (const item of HERITAGE_LANDMARKS) {
       if (HERITAGE_FOOTPRINTS[item.id]?.hidden) continue;
+      if (MERGED_HERITAGE_IDS.has(item.id)) continue;
       buildSite(buckets, item.id, item.kind);
     }
     return mergeBuckets(buckets);

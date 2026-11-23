@@ -716,6 +716,32 @@ for (const [name, ways] of Object.entries(streetWays)) {
 }
 
 /**
+ * 平江河：把精细模型内河接进主河网。
+ *
+ * 平江路模型自带 190m 样板段内河（街道西侧，水面 u∈[-20.5,-8.5]，中心 -14.5m），
+ * 而 OSM 城内水道在该范围被模型包围盒裁掉，剩下两截又按"断头河"规则整条剔除，
+ * 于是模型内河成了两端齐茬断掉的死水。
+ *
+ * 这里沿用模型内河的同一条中心线（平江路折线左法线偏移 14.5m），南端接干将河
+ * （z≈60），北端接临顿河（x≈600）。必须在"水道退出模型包围盒 / 河网收口"
+ * 之后追加：否则这一条又会被裁断或当成断头河丢弃。build-buildings 读同一份
+ * waterways，沿河民居会同步退出河道，不会出现房子泡在水里。
+ */
+const pingjiangRiver = (() => {
+  const path = landmarks.pingjiang?.path;
+  if (!path || path.length < 2) return null;
+  const aligned = offsetStreetRiver(path, 14.5);
+  const [lastX] = aligned[aligned.length - 1];
+  return roundLine([[601, aligned[0][1]], ...aligned, [lastX, 60]]);
+})();
+if (pingjiangRiver) {
+  waterways.push(pingjiangRiver);
+  console.log(
+    `[水系] 补画平江河 ${pingjiangRiver.length} 点：对齐模型内河中心线（西偏 14.5m），南接干将河、北接临顿河`,
+  );
+}
+
+/**
  * 山塘河对齐精细模型：
  * 模型内河西岸在街道中心线 +7.7m 处（脚本里 u=-7.7，世界方向为左法线）。
  * 这里直接用山塘街折线偏移生成绘制河道中心线，保证模型水面与绘制水面完全重合，

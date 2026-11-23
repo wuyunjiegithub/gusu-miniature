@@ -89,24 +89,38 @@ export interface CrosswalkOptions {
    * 路口节点会把相交的每一条路的走向都收进来，若照着支路走向铺 22m 宽的条纹带，
    * 条纹会整条甩到路缘之外的地面上——必须按实际路面量出可铺宽度。
    */
-  widthAt?: (x: number, z: number, nx: number, nz: number) => number;
+  widthAt?: (x: number, z: number, nx: number, nz: number, dx: number, dz: number) => number;
+  /**
+   * 路口节点的切线来自前后顶点连线，弯道上会与铺设点的真实路向差十几甚至几十度，
+   * 条纹就会斜着铺。这里把过街带中心吸附到实际路面中心线，并返回该处真实单位路向，
+   * 保证条纹长边与脚下道路严格正交。
+   */
+  snap?: (
+    x: number,
+    z: number,
+    dx: number,
+    dz: number,
+  ) => { x: number; z: number; ux: number; uz: number } | null;
 }
 
 /**
- * 斑马线几何：每条进口道画一条横跨路面的条纹带。
- * 条纹长边沿过街方向（横跨路面），沿行车方向按 0.55m 实 / 0.55m 空排布。
+ * 斑马线几何：每条进口道画一条过街带。
+ * 白色粗实线顺着车行方向（与路缘平行），沿过街方向按 0.45m 实 / 0.6m 空排满路面。
  */
 export function buildCrosswalkGeometry(
   junctions: Junction[],
   y: number,
   options: CrosswalkOptions = { roadWidth: 24, setback: 15 },
 ): Float32Array {
-  const { roadWidth, setback, widthAt } = options;
+  const { roadWidth, setback, widthAt, snap } = options;
   const half = roadWidth / 2;
   const positions: number[] = [];
-  const BAR_W = 0.55;
-  const BAR_GAP = 0.55;
-  const BARS = 6;
+  /** 条纹宽（沿过街方向量）与间距 */
+  const BAR_W = 0.45;
+  const BAR_GAP = 0.6;
+  const PITCH = BAR_W + BAR_GAP;
+  /** 人行横道沿车行方向的深度（半深），国标不小于 3m */
+  const DEPTH_HALF = 3.3;
 
   const quad = (
     ax: number, az: number,
@@ -124,23 +138,33 @@ export function buildCrosswalkGeometry(
       for (const sign of [1, -1]) {
         const cx = junction.x + dx * setback * sign;
         const cz = junction.z + dz * setback * sign;
-        const nx = -dz;
-        const nz = dx;
-        const bandHalf = widthAt ? Math.min(half, widthAt(cx, cz, nx, nz, dx, dz)) : half;
+        // 优先用铺设点的真实路向定向：弯道节点切线会让条纹斜铺
+        const local = snap?.(cx, cz, dx, dz) ?? null;
+        // 吸附不到"同向道路"说明这条进口道在这里并不存在，铺出来会是一条悬空斜带
+        if (snap && !local) continue;
+        const ox = local ? local.x : cx;
+        const oz = local ? local.z : cz;
+        const dirX = local ? local.ux : dx;
+        const dirZ = local ? local.uz : dz;
+        const nx = -dirZ;
+        const nz = dirX;
+        const bandHalf = widthAt ? Math.min(half, widthAt(ox, oz, nx, nz, dirX, dirZ)) : half;
         if (bandHalf < 3) continue;
-        const center = ((BARS - 1) * (BAR_W + BAR_GAP)) / 2;
+        // 条纹沿过街方向横向排布，覆盖实际路面宽度
+        const bars = Math.max(1, Math.floor((bandHalf * 2) / PITCH));
+        const start = -((bars - 1) * PITCH) / 2;
 
-        for (let k = 0; k < BARS; k += 1) {
-          const off = k * (BAR_W + BAR_GAP) - center;
-          // 沿行车方向 ±BAR_W/2，沿过街方向 ±bandHalf（量出来的实际路面半宽）
-          const ax = cx + dx * (off - BAR_W / 2) - nx * bandHalf;
-          const az = cz + dz * (off - BAR_W / 2) - nz * bandHalf;
-          const bx = cx + dx * (off - BAR_W / 2) + nx * bandHalf;
-          const bz = cz + dz * (off - BAR_W / 2) + nz * bandHalf;
-          const cxp = cx + dx * (off + BAR_W / 2) + nx * bandHalf;
-          const czp = cz + dz * (off + BAR_W / 2) + nz * bandHalf;
-          const dxp = cx + dx * (off + BAR_W / 2) - nx * bandHalf;
-          const dzp = cz + dz * (off + BAR_W / 2) - nz * bandHalf;
+        for (let k = 0; k < bars; k += 1) {
+          const off = start + k * PITCH;
+          // 长边沿车行方向 ±DEPTH_HALF（与路缘平行），宽 BAR_W
+          const ax = ox - dirX * DEPTH_HALF + nx * (off - BAR_W / 2);
+          const az = oz - dirZ * DEPTH_HALF + nz * (off - BAR_W / 2);
+          const bx = ox - dirX * DEPTH_HALF + nx * (off + BAR_W / 2);
+          const bz = oz - dirZ * DEPTH_HALF + nz * (off + BAR_W / 2);
+          const cxp = ox + dirX * DEPTH_HALF + nx * (off + BAR_W / 2);
+          const czp = oz + dirZ * DEPTH_HALF + nz * (off + BAR_W / 2);
+          const dxp = ox + dirX * DEPTH_HALF + nx * (off - BAR_W / 2);
+          const dzp = oz + dirZ * DEPTH_HALF + nz * (off - BAR_W / 2);
           quad(ax, az, bx, bz, cxp, czp, dxp, dzp);
         }
       }

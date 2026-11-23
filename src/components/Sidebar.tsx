@@ -4,24 +4,53 @@ import { HERITAGE_LANDMARKS, HERITAGE_LEVEL_LABEL } from '../data/heritage';
 import { LANDMARK_TYPE_COLORS } from '../constants/palette';
 import { useSandTable } from '../store/useSandTable';
 import { filterLandmarks, hasActiveFilters } from '../utils/filterLandmarks';
-import type { LandmarkPriority, LandmarkType } from '../types';
-
-const PRIORITY_LABEL: Record<LandmarkPriority, string> = {
-  P0: '核心景点',
-  P1: '重点景点',
-  P2: '延伸景点',
-  P3: '文保单位',
-};
-
-const PRIORITY_ORDER: LandmarkPriority[] = ['P0', 'P1', 'P2', 'P3'];
+import type { Landmark, LandmarkType } from '../types';
 
 const TYPE_ORDER: LandmarkType[] = ['garden', 'district', 'monument', 'modern', 'temple'];
 
-/** 文保 id → 保护级别，用于列表小标签与"国保/省保"筛选 */
+const CATEGORY_ORDER = [
+  'classical-garden',
+  'historic-district',
+  'tower-gate',
+  'temple-shrine',
+  'culture-celebrity',
+  'modern-architecture',
+] as const;
+
+type LandmarkCategory = (typeof CATEGORY_ORDER)[number];
+
+const CATEGORY_LABEL: Record<LandmarkCategory, string> = {
+  'classical-garden': '古典园林',
+  'historic-district': '历史街区',
+  'tower-gate': '古塔城门',
+  'temple-shrine': '寺庙祠观',
+  'culture-celebrity': '文博名人',
+  'modern-architecture': '近现代建筑',
+};
+
 const HERITAGE_LEVEL = new Map(HERITAGE_LANDMARKS.map((h) => [h.id, h.level]));
+const HERITAGE_KIND = new Map(HERITAGE_LANDMARKS.map((h) => [h.id, h.kind]));
+const TOWER_GATE_IDS = new Set(['panmen', 'shuangta', 'beisita', 'huqiuta']);
+const CULTURE_IDS = new Set(['suzhou-museum', 'tangyinci']);
+
+function getCategory(landmark: Landmark): LandmarkCategory {
+  const kind = HERITAGE_KIND.get(landmark.id);
+  if (kind === 'garden') return 'classical-garden';
+  if (kind === 'pagoda' || kind === 'gate') return 'tower-gate';
+  if (kind === 'temple') return 'temple-shrine';
+  if (kind === 'mansion' || kind === 'stele') return 'culture-celebrity';
+  if (kind === 'school') return 'modern-architecture';
+  if (TOWER_GATE_IDS.has(landmark.id)) return 'tower-gate';
+  if (CULTURE_IDS.has(landmark.id)) return 'culture-celebrity';
+  if (landmark.type === 'garden') return 'classical-garden';
+  if (landmark.type === 'district') return 'historic-district';
+  if (landmark.type === 'temple') return 'temple-shrine';
+  if (landmark.type === 'modern') return 'modern-architecture';
+  return 'culture-celebrity';
+}
 
 /**
- * 左侧菜单：按优先级分组列出景点，支持搜索与多维筛选（名称/类型/优先级/文保等级/世遗）。
+ * 左侧菜单：按游览属性分组列出景点，支持搜索与多维筛选（名称/类型/文保等级/世遗）。
  * 点击条目选中景点 → 相机聚焦（FR-09）；列表、3D 标签、小地图共享同一筛选态。
  *
  * 收放：按 H 键或点右上角的按钮。H 键在输入框聚焦时不触发（见下方守卫）。
@@ -136,28 +165,6 @@ export function Sidebar() {
               </div>
             </div>
             <div className="filter-row">
-              <span className="filter-label">级别</span>
-              <div className="filter-chips">
-                <button
-                  type="button"
-                  className={filters.priority === null ? 'on' : ''}
-                  onClick={() => setFilter('priority', null)}
-                >
-                  全部
-                </button>
-                {PRIORITY_ORDER.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className={filters.priority === p ? 'on' : ''}
-                    onClick={() => setFilter('priority', filters.priority === p ? null : p)}
-                  >
-                    {PRIORITY_LABEL[p]}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="filter-row">
               <span className="filter-label">文保</span>
               <div className="filter-chips">
                 {([null, 'national', 'provincial'] as const).map((lv) => (
@@ -183,13 +190,13 @@ export function Sidebar() {
         )}
 
         <nav className="sidebar-nav">
-          {PRIORITY_ORDER.map((priority) => {
-            const group = visible.filter((item) => item.priority === priority);
+          {CATEGORY_ORDER.map((category) => {
+            const group = visible.filter((item) => getCategory(item) === category);
             if (group.length === 0) return null;
             return (
-              <section key={priority} className="sidebar-group">
+              <section key={category} className="sidebar-group">
                 <h2 className="sidebar-group-title">
-                  {PRIORITY_LABEL[priority]}
+                  {CATEGORY_LABEL[category]}
                   <span className="group-count">{group.length}</span>
                 </h2>
                 <ul>
@@ -229,8 +236,8 @@ export function Sidebar() {
             <div className="sidebar-detail">
               <h3>{selected.name}</h3>
               <p className="sidebar-tags">
+                <span>{CATEGORY_LABEL[getCategory(selected)]}</span>
                 <span>{LANDMARK_TYPE_LABEL[selected.type]}</span>
-                <span>{selected.priority}</span>
                 {selected.worldHeritage && <span>世界遗产</span>}
               </p>
               <p className="sidebar-desc">{selected.description}</p>

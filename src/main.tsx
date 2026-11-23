@@ -1,7 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
-import { useSandTable, type Season, type TimeOfDay } from './store/useSandTable';
+import { useSandTable, type TimeOfDay } from './store/useSandTable';
+import type { Season } from './constants/seasons';
 import './styles.css';
 
 /**

@@ -2,8 +2,14 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { useBuildings } from '../hooks/useBuildings';
 import { useSandTable } from '../store/useSandTable';
-import { ROOF_COLORS, WALL_COLORS } from '../constants/palette';
+import {
+  CLASSIC_ROOF_COLORS,
+  CLASSIC_WALL_COLORS,
+  MODERN_ROOF_COLORS,
+  MODERN_WALL_COLORS,
+} from '../constants/palette';
 import { createPitchedRoofGeometry } from '../utils/roof';
+import { createFacadeMaterial } from '../materials/facade';
 
 const hash = (i: number): number => {
   const v = Math.sin(i * 127.1 + 311.7) * 43758.5453;
@@ -14,169 +20,6 @@ const hash = (i: number): number => {
 const OUTER_BASE_Y = -2;
 
 /**
- * 立面细节着色器：按每个实例的真实尺寸，在墙面上程序化绘制
- * 窗格、窗框、大门、勒脚与檐口阴影；夜间约四成窗户透出暖光。
- * 纯着色器实现，不增加任何 draw call 与顶点。
- */
-const FACADE_VERTEX_PARS = /* glsl */ `
-varying vec3 vFacadeLocal;
-varying vec3 vFacadeNormal;
-varying vec3 vFacadeScale;
-varying float vFacadeSeed;
-`;
-
-const FACADE_VERTEX_BODY = /* glsl */ `
-  vFacadeScale = vec3(
-    length(instanceMatrix[0].xyz),
-    length(instanceMatrix[1].xyz),
-    length(instanceMatrix[2].xyz)
-  );
-  vFacadeLocal = position;
-  vFacadeNormal = normal;
-  vec3 facadeInstancePos = instanceMatrix[3].xyz;
-  vFacadeSeed = fract(sin(dot(facadeInstancePos.xz, vec2(12.9898, 78.233))) * 43758.5453);
-`;
-
-const FACADE_FRAGMENT_PARS = /* glsl */ `
-varying vec3 vFacadeLocal;
-varying vec3 vFacadeNormal;
-varying vec3 vFacadeScale;
-varying float vFacadeSeed;
-uniform float uNight;
-uniform float uFrost;
-/** 当前窗格的夜间灯色（含亮度），暖黄为主、少量冷白 */
-vec3 facadeGlowTint = vec3(1.0, 0.77, 0.48);
-/**
- * 边界柔化补偿：按像素在墙面上的覆盖尺寸（米）加宽过渡带。
- * 细窗框、窗棂只有几厘米，远看不足一个像素，硬边会在镜头移动时高频闪烁，
- * 这里让边缘宽度随 fwidth 自适应，等价于解析抗锯齿。
- */
-float facadeSoftBias = 0.0;
-float facadeBand(float d, float halfW, float soft) {
-  return 1.0 - smoothstep(halfW, halfW + soft + facadeSoftBias, d);
-}
-`;
-
-const FACADE_FRAGMENT_BODY = /* glsl */ `
-float facadeGlow = 0.0;
-{
-  float detailFade = 1.0 - smoothstep(900.0, 1900.0, length(vViewPosition));
-  if (detailFade > 0.001) {
-    float faceAxis = abs(vFacadeNormal.x) > 0.5 ? 1.0 : (abs(vFacadeNormal.z) > 0.5 ? 2.0 : 0.0);
-    if (faceAxis > 0.5) {
-      bool sideFace = faceAxis < 1.5;
-      float faceW = sideFace ? vFacadeScale.z : vFacadeScale.x;
-      float u = (sideFace ? vFacadeLocal.z * vFacadeScale.z : vFacadeLocal.x * vFacadeScale.x)
-        + faceW * 0.5;
-      float h = max(vFacadeScale.y, 1.0);
-      float y = clamp(vFacadeLocal.y, 0.0, 1.0) * h;
-      // 一个像素覆盖的墙面尺寸（米），用于自适应柔化窗框/窗棂等细边
-      float facadePx = max(fwidth(u), fwidth(y));
-      facadeSoftBias = clamp(facadePx, 0.0, 0.35);
-      // 坡顶民居的山墙（短边）少开窗
-      float gable = sideFace ? 1.0 - step(24.0, h) : 0.0;
-
-      // 勒脚与檐口阴影
-      float plinth = 1.0 - smoothstep(0.45, 0.68, y);
-      float eave = smoothstep(h - 0.55, h - 0.15, y);
-      diffuseColor.rgb *= 1.0 - (plinth * 0.13 + eave * 0.1) * detailFade;
-
-      // 开间（列）划分：普通立面最多 2 个开间，宽立面才开 3 个
-      float margin = clamp(faceW * 0.16, 0.5, 1.4);
-      float innerW = max(faceW - margin * 2.0, 0.6);
-      float colSpacing = 5.0;
-      float maxCols = faceW > 14.0 ? 3.0 : 2.0;
-      float cols = clamp(floor(innerW / colSpacing + 0.45), 1.0, maxCols);
-      float colW = innerW / cols;
-      float colId = clamp(floor((u - margin) / colW), 0.0, cols - 1.0);
-      float cu = margin + (colId + 0.5) * colW;
-      float dx = abs(u - cu);
-
-      // 楼层划分：民居（h<12）最多 2 层窗，其余最多 4 层（对应 3~6 层建筑）
-      float startY = 1.9;
-      float usable = max(h - startY - 0.8, 1.0);
-      float rawRows = floor(usable / 4.3 + 0.45);
-      float rows = h < 12.0 ? min(rawRows, 2.0) : clamp(rawRows, 1.0, 4.0);
-      float rowH = usable / rows;
-      float rowId = clamp(floor((y - startY) / rowH), 0.0, rows - 1.0);
-      float cy = startY + (rowId + 0.5) * rowH;
-      float dy = abs(y - cy);
-
-      // 每格独立随机：窗型尺寸有差异，约 26% 开间不开窗
-      float cellSeed = fract(
-        sin(dot(vec2(colId + 1.0, rowId + 1.0), vec2(12.9898, 78.233)) + vFacadeSeed * 37.7) * 43758.5453
-      );
-      float cellSeed2 = fract(cellSeed * 91.73 + 0.37);
-      float winHalfH = min(1.2, rowH * 0.3) * (0.7 + 0.3 * fract(cellSeed * 7.31));
-      float winHalfW = min(0.7, colW * 0.3) * (0.62 + 0.38 * fract(cellSeed2 * 5.17));
-      winHalfW = mix(winHalfW, winHalfW * 0.55, gable);
-      float winMask = step(0.26, cellSeed2);
-      winMask *= mix(1.0, step(0.7, cellSeed2), gable);
-
-      // 大门：按建筑种子在四个立面中选一面，底层居中（山墙不开门）
-      float faceId = abs(vFacadeNormal.x) > 0.5
-        ? (vFacadeNormal.x > 0.0 ? 0.0 : 1.0)
-        : (vFacadeNormal.z > 0.0 ? 2.0 : 3.0);
-      float doorFace = floor(vFacadeSeed * 4.0);
-      float doorZone = 0.0;
-      if (abs(faceId - doorFace) < 0.5 && gable < 0.5) {
-        float du = abs(u - faceW * 0.5);
-        float dv = abs(y - 1.18);
-        doorZone = facadeBand(du, 0.7, 0.05) * facadeBand(dv, 1.18, 0.05);
-        float doorFrame = facadeBand(du, 0.84, 0.05) * facadeBand(dv, 1.32, 0.05) * (1.0 - doorZone);
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.74, doorFrame * detailFade);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.27, 0.18, 0.12), doorZone * detailFade);
-      }
-
-      // 窗洞：木框 + 玻璃 + 窗棂 + 窗台 + 窗楣
-      float winOuter = facadeBand(dx, winHalfW + 0.1, 0.04) * facadeBand(dy, winHalfH + 0.1, 0.04);
-      float win = facadeBand(dx, winHalfW, 0.03) * facadeBand(dy, winHalfH, 0.03);
-      float winOn = win * winMask * (1.0 - doorZone);
-      float frameOn = winOuter * winMask * (1.0 - win) * (1.0 - doorZone);
-
-      float sill = facadeBand(dx, winHalfW + 0.14, 0.05)
-        * facadeBand(abs(y - (cy - winHalfH - 0.12)), 0.06, 0.03) * winMask * (1.0 - doorZone);
-      float lintel = facadeBand(dx, winHalfW + 0.16, 0.06)
-        * facadeBand(abs(y - (cy + winHalfH + 0.14)), 0.07, 0.04) * winMask * (1.0 - doorZone);
-
-      // 玻璃上沿受檐影更暗，下沿略亮；木棂两竖一横
-      vec3 glass = mix(vec3(0.16, 0.2, 0.25), vec3(0.05, 0.07, 0.1), smoothstep(-winHalfH, winHalfH, y - cy));
-      float mulV = (1.0 - smoothstep(0.02, 0.05, abs(abs(dx) - winHalfW * 0.34))) * winOn;
-      float mulH = (1.0 - smoothstep(0.02, 0.05, abs(y - (cy + winHalfH * 0.42)))) * winOn;
-      // 窗棂仅 3cm 宽，像素覆盖超过 10cm 时淡出，避免远景木棂闪烁
-      float mullion = clamp(mulV + mulH, 0.0, 1.0) * (1.0 - smoothstep(0.10, 0.22, facadePx));
-
-      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.78, frameOn * detailFade);
-      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.33, 0.24, 0.17), frameOn * 0.8 * detailFade);
-      diffuseColor.rgb = mix(diffuseColor.rgb, glass, winOn * detailFade);
-      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.47, 0.35, 0.24), mullion * 0.9 * detailFade);
-      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.82, 0.77), sill * 0.9 * detailFade);
-      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.7, lintel * detailFade);
-
-      // 冬季墙面：苏州民居本来就是粉墙（#f4efe4 一档），和白屋顶并置会糊成一片雪。
-      // 雪后光照整体偏亮（环境光 0.5 + 白太阳 2.75），只压一档仍然过曝发白，
-      // 这里压到 0.35 左右：实测墙面落到中性灰（约 #8a8a8a），与积雪屋顶
-      // （约 #f0f0f0）拉开两档明度。只做乘法、不换成固定灰，各户色差仍保留。
-      if (uFrost > 0.5) {
-        diffuseColor.rgb *= vec3(0.35, 0.36, 0.39);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88, 0.90, 0.93), sill * 0.5 * detailFade);
-      }
-
-      // 夜间点灯：约四成窗户亮暖光
-      facadeGlow = winOn * step(cellSeed, 0.55) * detailFade;
-
-      // 窗光色温：每户偏暖程度不同，少数改用冷白灯；亮度也有差异
-      float tintSeed = fract(vFacadeSeed * 17.31 + cellSeed * 5.73);
-      vec3 warmTint = mix(vec3(1.0, 0.68, 0.36), vec3(1.0, 0.87, 0.64), fract(tintSeed * 2.13));
-      float coolMix = step(0.86, fract(tintSeed * 7.7 + 0.19));
-      facadeGlowTint = mix(warmTint, vec3(0.74, 0.84, 1.0), coolMix)
-        * (1.15 + 0.85 * fract(tintSeed * 3.1 + 0.4));
-    }
-  }
-}
-`;
-
-/**
  * 屋瓦细节着色器：沿屋脊方向按 0.38m 间距绘制瓦垄线，远处自动淡出。
  * 与墙体一样是纯着色器实现，不增加几何量。
  */
@@ -184,6 +27,7 @@ const ROOF_VERTEX_PARS = /* glsl */ `
 varying vec3 vRoofLocal;
 varying vec3 vRoofNormal;
 varying vec3 vRoofScale;
+varying float vRoofSeed;
 `;
 
 const ROOF_VERTEX_BODY = /* glsl */ `
@@ -194,12 +38,15 @@ const ROOF_VERTEX_BODY = /* glsl */ `
   );
   vRoofLocal = position;
   vRoofNormal = normal;
+  vec3 roofInstancePos = instanceMatrix[3].xyz;
+  vRoofSeed = fract(sin(dot(roofInstancePos.xz, vec2(12.9898, 78.233))) * 43758.5453);
 `;
 
 const ROOF_FRAGMENT_PARS = /* glsl */ `
 varying vec3 vRoofLocal;
 varying vec3 vRoofNormal;
 varying vec3 vRoofScale;
+varying float vRoofSeed;
 uniform float uFrost;
 `;
 
@@ -212,10 +59,37 @@ const ROOF_FRAGMENT_BODY = /* glsl */ `
   // 瓦垄周期只有 0.38m：当一像素覆盖接近一个瓦垄时淡出，消除远景摩尔纹与闪烁
   float stripeAA = 1.0 - smoothstep(0.35, 0.9, fwidth(stripeCoord));
   float tileMask = tileFade * stripeAA;
+
+  // 山墙头：坡顶两端的三角面是粉墙，不是瓦面。
+  // 沿坡边压一道深色博风板、檐口再压一道，露出的白墙就是江南民居的山墙。
+  if (abs(vRoofNormal.x) > 0.6) {
+    float yw = clamp(vRoofLocal.y, 0.0, 1.0) * vRoofScale.y;
+    float edgeD = abs(
+      abs(vRoofLocal.z) * vRoofScale.z
+      - 0.5 * (1.0 - clamp(vRoofLocal.y, 0.0, 1.0)) * vRoofScale.z
+    );
+    float verge = (1.0 - smoothstep(0.1, 0.26, edgeD)) * tileFade;
+    float eaveDark = (1.0 - smoothstep(0.06, 0.22, yw)) * tileFade;
+    vec3 gableWall = mix(vec3(0.9, 0.87, 0.8), vec3(0.15, 0.17, 0.19), clamp(verge + eaveDark, 0.0, 1.0));
+    diffuseColor.rgb = mix(diffuseColor.rgb, gableWall, 0.95);
+    // 山墙也是粉墙，雪后与立面墙体同步压暗，避免和屋面积雪糊成一片
+    if (uFrost > 0.5) diffuseColor.rgb *= vec3(0.38, 0.39, 0.42);
+  }
   // 坡顶几何是双面渲染的，法线朝下的一侧靠 gl_FrontFacing 翻面参与光照，
   // 这里判"是否朝上的瓦面"必须取绝对值，否则两个坡面永远命中不了
-  if (tileMask > 0.001 && abs(vRoofNormal.y) > 0.2) {
+  else if (tileMask > 0.001 && abs(vRoofNormal.y) > 0.2) {
+    // 正脊：沿屋脊压一条深色脊瓦
+    float zw = vRoofLocal.z * vRoofScale.z;
+    float ridge = 1.0 - smoothstep(0.1, 0.3, abs(zw));
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.1, 0.12, 0.14), ridge * 0.5 * tileFade);
+    // 檐口滴水：贴近檐口的一圈颜色更沉
+    float eaveLine = 1.0 - smoothstep(0.12, 0.42, clamp(vRoofLocal.y, 0.0, 1.0) * vRoofScale.y);
+    diffuseColor.rgb *= 1.0 - eaveLine * 0.16 * tileFade;
     diffuseColor.rgb *= 1.0 - smoothstep(0.55, 1.0, stripe) * 0.16 * tileMask;
+    // 旧瓦色差：个别瓦垄整列偏深，像经年的青瓦
+    float tileId = floor(stripeCoord);
+    float tileVar = fract(sin(tileId * 12.9898 + vRoofSeed * 78.233) * 43758.5453);
+    diffuseColor.rgb *= 1.0 - step(0.78, tileVar) * 0.06 * tileMask;
   }
   // 积雪：朝上的瓦面覆雪，保留瓦垄凹槽，避免整片纯白
   if (uFrost > 0.5 && abs(vRoofNormal.y) > 0.04) {
@@ -236,17 +110,6 @@ const ROOF_FRAGMENT_BODY = /* glsl */ `
  */
 export function BuildingField() {
   const data = useBuildings();
-  /**
-   * 城外需要坡顶的建筑。
-   * OSM 城外形体里有一部分 roofH 为 0（平顶建筑），若按 1mm 高度生成坡顶，
-   * 坡面几乎与墙体顶面共面：远视距下深度缓冲分辨不出这 1mm，整片屋面会
-   * 与浅色墙顶交替 z-fighting 而闪烁（白天黑夜都闪）。这类建筑直接用墙顶
-   * 作为屋面，不再生成退化坡顶。
-   */
-  const outerPitched = useMemo(
-    () => (data ? data.outer.filter((rec) => rec[6] > 0.05) : []),
-    [data],
-  );
   const wallsRef = useRef<THREE.InstancedMesh>(null);
   const pitchedRef = useRef<THREE.InstancedMesh>(null);
   const flatRef = useRef<THREE.InstancedMesh>(null);
@@ -280,19 +143,21 @@ export function BuildingField() {
   const night = useSandTable((state) => state.time === 'night');
   const nightRef = useRef(night);
   nightRef.current = night;
-  const nightUniformRef = useRef<{ value: number } | null>(null);
 
   /** 冬霜开关（墙体/屋顶/平顶/城外白模着色器 uniform） */
   const winter = useSandTable((state) => state.season === 'winter');
   const winterRef = useRef(winter);
   winterRef.current = winter;
   const frostUniformsRef = useRef<Array<{ value: number }>>([]);
+  /** 城内 / 城外两套立面材质各自的夜景 uniform */
+  const facadeUniformsRef = useRef<Array<{ night: { value: number }; frost: { value: number } }>>([]);
 
   useEffect(() => {
-    if (nightUniformRef.current) nightUniformRef.current.value = night ? 1 : 0;
+    for (const uniforms of facadeUniformsRef.current) uniforms.night.value = night ? 1 : 0;
   }, [night]);
 
   useEffect(() => {
+    for (const uniforms of facadeUniformsRef.current) uniforms.frost.value = winter ? 1 : 0;
     for (const uniform of frostUniformsRef.current) uniform.value = winter ? 1 : 0;
   }, [winter]);
 
@@ -326,28 +191,17 @@ export function BuildingField() {
     };
   };
 
-  /** 墙体材质：注入立面程序化细节（窗、门、勒脚、檐口、夜间窗光、积雪） */
+  /** 城内：古城粉墙木窗 */
   const wallMat = useMemo(() => {
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.92 });
-    mat.onBeforeCompile = (shader) => {
-      const uniform = { value: nightRef.current ? 1 : 0 };
-      shader.uniforms.uNight = uniform;
-      nightUniformRef.current = uniform;
-      const frostUniform = { value: winterRef.current ? 1 : 0 };
-      shader.uniforms.uFrost = frostUniform;
-      frostUniformsRef.current.push(frostUniform);
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>\n${FACADE_VERTEX_PARS}`)
-        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${FACADE_VERTEX_BODY}`);
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>\n${FACADE_FRAGMENT_PARS}`)
-        .replace('#include <color_fragment>', `#include <color_fragment>\n${FACADE_FRAGMENT_BODY}`)
-        .replace(
-          '#include <emissivemap_fragment>',
-          `#include <emissivemap_fragment>\n  totalEmissiveRadiance += facadeGlowTint * facadeGlow * uNight * 2.4;`,
-        );
-    };
-    return mat;
+    const facade = createFacadeMaterial(false, nightRef.current, winterRef.current);
+    facadeUniformsRef.current.push(facade.uniforms);
+    return facade.material;
+  }, []);
+  /** 城外：现代玻璃带立面 */
+  const modernWallMat = useMemo(() => {
+    const facade = createFacadeMaterial(true, nightRef.current, winterRef.current);
+    facadeUniformsRef.current.push(facade.uniforms);
+    return facade.material;
   }, []);
 
   /** 坡顶材质：注入瓦垄线细节与积雪 */
@@ -398,7 +252,7 @@ export function BuildingField() {
       let i = 0;
       for (const rec of [...data.pitched, ...data.flat]) {
         applyRecord(walls, i, rec);
-        color.set(WALL_COLORS[Math.floor(hash(i) * WALL_COLORS.length)]);
+        color.set(CLASSIC_WALL_COLORS[Math.floor(hash(i) * CLASSIC_WALL_COLORS.length)]);
         walls.setColorAt(i, color);
         i += 1;
       }
@@ -419,7 +273,7 @@ export function BuildingField() {
         dummy.scale.set(w * 1.08 * jitter, roofH, d * 1.08 * jitter);
         dummy.updateMatrix();
         pitched.setMatrixAt(i, dummy.matrix);
-        color.set(ROOF_COLORS[Math.floor(hash(i + 97) * ROOF_COLORS.length)]);
+        color.set(CLASSIC_ROOF_COLORS[Math.floor(hash(i + 97) * CLASSIC_ROOF_COLORS.length)]);
         pitched.setColorAt(i, color);
       });
       pitched.instanceMatrix.needsUpdate = true;
@@ -445,7 +299,7 @@ export function BuildingField() {
       if (flat.instanceColor) flat.instanceColor.needsUpdate = true;
     }
 
-    // 城外真实建筑：与城内共用立面着色器（窗、门、檐口、夜间窗光）
+    // 城外真实建筑：现代立面（通长玻璃带、浅灰混凝土墙）
     const outerMesh = outerRef.current;
     if (outerMesh) {
       data.outer.forEach((rec, i) => {
@@ -456,25 +310,25 @@ export function BuildingField() {
         dummy.scale.set(w * shrink, h, d * shrink);
         dummy.updateMatrix();
         outerMesh.setMatrixAt(i, dummy.matrix);
-        color.set(WALL_COLORS[Math.floor(hash(i + 53) * WALL_COLORS.length)]);
+        color.set(MODERN_WALL_COLORS[Math.floor(hash(i + 53) * MODERN_WALL_COLORS.length)]);
         outerMesh.setColorAt(i, color);
       });
       outerMesh.instanceMatrix.needsUpdate = true;
       if (outerMesh.instanceColor) outerMesh.instanceColor.needsUpdate = true;
     }
 
-    // 城外真实建筑的坡顶（与城内同一套瓦垄材质；平顶建筑（roofH≈0）不生成坡顶）
+    // 城外真实建筑的平屋面：薄女儿墙压顶，与城内坡瓦顶形成风格分界
     const outerRoof = outerRoofRef.current;
     if (outerRoof) {
-      outerPitched.forEach((rec, i) => {
-        const [x, z, w, d, rot, h, roofH] = rec;
+      data.outer.forEach((rec, i) => {
+        const [x, z, w, d, rot, h] = rec;
         const jitter = 0.995 + hash(i * 6.17 + 8.3) * 0.01;
         dummy.position.set(x, OUTER_BASE_Y + h, z);
         dummy.rotation.set(0, rot, 0);
-        dummy.scale.set(w * 1.06 * jitter, roofH, d * 1.06 * jitter);
+        dummy.scale.set(w * 1.02 * jitter, 0.8, d * 1.02 * jitter);
         dummy.updateMatrix();
         outerRoof.setMatrixAt(i, dummy.matrix);
-        color.set(ROOF_COLORS[Math.floor(hash(i + 191) * ROOF_COLORS.length)]);
+        color.set(MODERN_ROOF_COLORS[Math.floor(hash(i + 191) * MODERN_ROOF_COLORS.length)]);
         outerRoof.setColorAt(i, color);
       });
       outerRoof.instanceMatrix.needsUpdate = true;
@@ -499,7 +353,7 @@ export function BuildingField() {
       for (const rec of data.outer) pushShadow(rec, -1.95);
       shadows.instanceMatrix.needsUpdate = true;
     }
-  }, [data, outerPitched]);
+  }, [data]);
 
   if (!data) return null;
 
@@ -510,15 +364,15 @@ export function BuildingField() {
         args={[shadowGeo, shadowMat, data.pitched.length + data.flat.length + data.outer.length]}
         frustumCulled={false}
       />
-      {/* 城外背景白模（渲染顺序早于城内建筑，视觉上退后） */}
+      {/* 城外背景建筑：现代立面，渲染顺序早于城内建筑，视觉上退后 */}
       <instancedMesh
         ref={outerRef}
-        args={[wallGeo, wallMat, Math.max(1, data.outer.length)]}
+        args={[wallGeo, modernWallMat, Math.max(1, data.outer.length)]}
         frustumCulled={false}
       />
       <instancedMesh
         ref={outerRoofRef}
-        args={[roofGeo, roofMat, Math.max(1, outerPitched.length)]}
+        args={[slabGeo, slabMat, Math.max(1, data.outer.length)]}
         frustumCulled={false}
       />
       {/*

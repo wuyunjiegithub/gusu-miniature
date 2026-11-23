@@ -172,12 +172,36 @@ lm = geo["landmarks"]["pingjiang"]
 CX, CZ = lm["centroid"]["x"], lm["centroid"]["z"]
 PATH = [(x - CX, -(z - CZ)) for x, z in lm["path"]]
 
-# 取 path[5] → path[8] 方向的连续折线；在 path[7] 之后再截 43 m，总长约 185.6 m
-PTS = [PATH[5], PATH[6], PATH[7]]
-last = PATH[7]
-nxt = PATH[8]
-seg_len = math.hypot(nxt[0] - last[0], nxt[1] - last[1])
-PTS.append(lerp(last, nxt, 43.0 / seg_len))
+# 样板段：沿 path[5] → path[8] 的连续折线截取。
+# 原起点 path[5] 正好压在三路交会口（853.3, -390.5）上，整体沿路南移 32 m：
+# 北端与白塔东路南缘留出 14 m 净距，斜视角下屋檐也不会压到马路。
+# 长度保持 185.4 m，尾端顺势向 path[8] 方向延长。
+MODEL_START = 32.0
+MODEL_LEN = 185.4
+CHAIN = [PATH[5], PATH[6], PATH[7], PATH[8]]
+
+
+def slice_chain(chain, s0, s1):
+    """按累计弧长从折线中截取子折线（含两端插值点）。"""
+    acc = [0.0]
+    for a, b in zip(chain, chain[1:]):
+        acc.append(acc[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+
+    def point(s):
+        s = max(0.0, min(acc[-1], s))
+        for i in range(len(acc) - 1):
+            if s <= acc[i + 1]:
+                d = acc[i + 1] - acc[i]
+                return lerp(chain[i], chain[i + 1], (s - acc[i]) / d if d else 0.0)
+        return chain[-1]
+
+    out = [point(s0)]
+    out.extend(p for p, a in zip(chain[1:], acc[1:]) if s0 < a < s1)
+    out.append(point(s1))
+    return out
+
+
+PTS = slice_chain(CHAIN, MODEL_START, MODEL_START + MODEL_LEN)
 
 SEGMENTS = []
 CUM = [0.0]
@@ -261,13 +285,14 @@ def strip(b, s0, s1, ua, ub, zb, zt, step=2.5):
 # ---------------------------------------------------------------- 底板 / 街 / 河
 
 STREET_HALF = 3.0          # 步行街半宽（总宽 6 m）
-BANK_NEAR = -8.5           # 平江河东岸（临街一侧）
-BANK_FAR = -15.5           # 平江河西岸
+BANK_NEAR = -8.5           # 平江河东岸（临街一侧，保持不变）
+BANK_FAR = -20.5           # 平江河西岸：水面由 7 m 拓宽到 12 m，与城市河道等宽
+WEST_EDGE = -27.0          # 河西岸底板外缘（容纳加宽后的河面与桥台）
 WATER_Z = 0.02
 
 base = Builder()
 strip(base, 0.0, TOTAL, 14.0, BANK_NEAR, -0.5, 0.0)      # 街道东侧底板
-strip(base, 0.0, TOTAL, BANK_FAR, -20.5, -0.5, 0.0)      # 河西南岸底板
+strip(base, 0.0, TOTAL, BANK_FAR, WEST_EDGE, -0.5, 0.0)  # 河西南岸底板
 strip(base, 0.0, TOTAL, BANK_NEAR, BANK_FAR, -0.5, -0.42)  # 河床
 base.build("ground_base", MAT_STONE)
 
@@ -416,7 +441,7 @@ def stone_bridge(sb):
     def P(u, v, z):
         return (p[0] + n[0] * u + t[0] * v, p[1] + n[1] * u + t[1] * v, z)
 
-    u0, u1 = -3.0, -20.0
+    u0, u1 = -3.0, -24.0
     N = 14
     secs = []
     for i in range(N + 1):
@@ -436,8 +461,8 @@ def stone_bridge(sb):
     for u, z in (secs[0], secs[-1]):
         deck.quad(P(u, -1.5, z), P(u, 1.5, z), P(u, 1.5, z - 0.35), P(u, -1.5, z - 0.35))
 
-    # 桥台侧墙（拱券之外的桥身立面）
-    au = -11.45
+    # 桥台侧墙（拱券之外的桥身立面）；拱心对齐加宽后的河道中心 -14.5
+    au = -14.5
     for i in range(N):
         ua, za = secs[i]
         ub, zb = secs[i + 1]

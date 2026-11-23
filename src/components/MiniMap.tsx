@@ -6,6 +6,7 @@ import { LANDMARK_TYPE_COLORS } from '../constants/palette';
 import { useSandTable } from '../store/useSandTable';
 import { cameraPose } from '../utils/cameraPose';
 import { filterLandmarks } from '../utils/filterLandmarks';
+import { perfStats } from '../utils/perfStats';
 import type { LocalPoint2 } from '../types';
 
 /**
@@ -17,7 +18,6 @@ import type { LocalPoint2 } from '../types';
  * 提供"古城 / 全域"两档视图：全域覆盖 ±WORLD_LIMIT 以容纳寒山寺、虎丘塔。
  */
 const SIZE = 200; // SVG 视口边长（px）
-const PAD = 10;
 const WORLD_LIMIT = 5800;
 
 type ViewMode = 'city' | 'world';
@@ -28,13 +28,31 @@ const path = (pts: LocalPoint2[]) =>
 const line = (pts: LocalPoint2[]) =>
   pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]},${-p[1]}`).join(' ');
 
+const fmtMeters = (meters: number) =>
+  Math.abs(meters) >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${meters.toFixed(0)} m`;
+
+const getScale = (metersPerPixel: number) => {
+  if (!(metersPerPixel > 0)) return { meters: 0, width: 80 };
+  const raw = metersPerPixel * 80;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / magnitude;
+  const factor = normalized >= 5 ? 5 : normalized >= 2 ? 2 : normalized >= 1 ? 1 : 0.5;
+  const meters = factor * magnitude;
+  return { meters, width: meters / metersPerPixel };
+};
+
 export function MiniMap() {
   const [mode, setMode] = useState<ViewMode>('city');
   const [collapsed, setCollapsed] = useState(false);
   const selectedId = useSandTable((state) => state.selectedId);
   const select = useSandTable((state) => state.select);
   const filters = useSandTable((state) => state.filters);
+  const [stats, setStats] = useState({ fps: 0, calls: 0, triangles: 0 });
   const viewRef = useRef<SVGGElement>(null);
+  const compassRef = useRef<HTMLDivElement>(null);
+  const coordsRef = useRef<HTMLDivElement>(null);
+  const scaleRef = useRef<HTMLDivElement>(null);
+  const scaleLabelRef = useRef<HTMLSpanElement>(null);
 
   const levelById = useMemo(
     () => new Map(HERITAGE_LANDMARKS.map((h) => [h.id, h.level])),
@@ -73,10 +91,22 @@ export function MiniMap() {
         const ring = g.querySelector('circle');
         if (ring) ring.setAttribute('r', String(r));
       }
+      if (compassRef.current) compassRef.current.style.transform = `rotate(${-cameraPose.heading}deg)`;
+      if (coordsRef.current) coordsRef.current.textContent = `E ${fmtMeters(cameraPose.x)} · N ${fmtMeters(-cameraPose.z)}`;
+      const scale = getScale(cameraPose.metersPerPixel);
+      if (scaleRef.current) scaleRef.current.style.width = `${scale.width}px`;
+      if (scaleLabelRef.current) scaleLabelRef.current.textContent = fmtMeters(scale.meters);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setStats({ fps: perfStats.fps, calls: perfStats.drawCalls, triangles: perfStats.triangles });
+    }, 500);
+    return () => window.clearInterval(timer);
   }, []);
 
   if (collapsed) {
@@ -196,6 +226,26 @@ export function MiniMap() {
         <span><i style={{ background: '#c9a86a' }} />古城</span>
         <span><i style={{ background: '#3d7c9c' }} />水系</span>
         <span>点击光点聚焦</span>
+      </div>
+      <div className="minimap-info">
+        <div className="hud-location">
+          <div className="hud-compass" aria-label="指南针">
+            <div ref={compassRef} className="hud-compass-dial">
+              <span className="north">N</span><span className="east">E</span>
+              <span className="south">S</span><span className="west">W</span><i />
+            </div>
+            <b />
+          </div>
+          <div className="hud-position">
+            <div ref={coordsRef}>E 0 m · N 0 m</div>
+            <div className="hud-scale-wrap">
+              <span ref={scaleLabelRef}>0 m</span>
+              <div ref={scaleRef} className="hud-scale" />
+            </div>
+          </div>
+        </div>
+        <div className="minimap-perf">{stats.fps} FPS · {stats.calls} draw calls · {(stats.triangles / 1000).toFixed(0)}k tris</div>
+        <div className="hud-keys">左键旋转 · 右键平移 · 滚轮缩放<br />H 收放菜单 · 点击景点聚焦</div>
       </div>
     </div>
   );

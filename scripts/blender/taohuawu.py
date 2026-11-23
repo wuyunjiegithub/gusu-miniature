@@ -205,6 +205,88 @@ def world(s, u):
     return (p[0] + n[0] * u, p[1] + n[1] * u)
 
 
+# ---------------------------------------------------------------- 路口避让
+# 桃花坞大街不是一条孤立的步行街：中街路（含廖家巷一线）在样板段中部
+# 斜穿而过，廖家巷支路在西侧再开一个口。如果按整段连续铺底板、排街墙，
+# 模型就会把 26m 的主干道路口和 11m 的支路口整个罩住（用户截图）。
+# 这里沿街中心线求"进入路面即断开"的区间（含路缘外 0.8m 缓冲），
+# 底板、街面、沿街建筑、树木灯笼一律给路口让位。
+CROSS_ROADS = [
+    # 中街路 / 廖家巷（26m 主干道），与桃花坞大街构成十字路口
+    [
+        (-1208.9, -1390.6), (-1187.1, -1248.0), (-1184.2, -1190.7),
+        (-1183.7, -1184.4), (-1174.7, -1151.4), (-1054.0, -880.7),
+    ],
+    # 廖家巷（11m 支路，西侧路口）
+    [
+        (-1208.5, -1245.4), (-1216.5, -1222.9), (-1210.3, -1186.5),
+        (-1201.3, -1153.9),
+    ],
+]
+CROSS_HALF = (13.0, 5.5)
+CURB_MARGIN = 0.8
+
+# 转到 Blender 局部坐标（x-CX, -(z-CZ)）；镜像不改变距离
+CROSS_LOCAL = [[(x - CX, -(z - CZ)) for x, z in poly] for poly in CROSS_ROADS]
+
+
+def dist_to_polyline(x, y, poly):
+    best = 1e9
+    for i in range(len(poly) - 1):
+        ax, ay = poly[i]
+        bx, by = poly[i + 1]
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / l2))
+        best = min(best, math.hypot(x - (ax + t * dx), y - (ay + t * dy)))
+    return best
+
+
+def in_crossing(p):
+    return any(
+        dist_to_polyline(p[0], p[1], poly) < half + CURB_MARGIN
+        for poly, half in zip(CROSS_LOCAL, CROSS_HALF)
+    )
+
+
+# 街墙、路缘、行道树都在这条带内，必须一起让开路口；底板再往外的一圈
+# 即便伸到路口下方，也被 1.38m 高的城市沥青路面盖住，不可见。
+WALL_SAMPLES = (-8.6, -5.65, 0.0, 5.65, 8.6)
+
+
+def crossing_at(s):
+    return any(in_crossing(world(s, u)) for u in WALL_SAMPLES)
+
+
+GAPS = []
+_scan = 0.0
+while _scan <= TOTAL:
+    if crossing_at(_scan):
+        start = _scan
+        while _scan <= TOTAL and crossing_at(_scan):
+            _scan += 0.25
+        end = min(_scan, TOTAL)
+        # 两个路口之间不足 6m 的碎块并进同一个缺口
+        if GAPS and start - GAPS[-1][1] < 6.0:
+            GAPS[-1] = (GAPS[-1][0], end)
+        else:
+            GAPS.append((start, end))
+    _scan += 0.25
+
+KEEP = []
+_cursor = 0.0
+for g0, g1 in GAPS:
+    if g0 - _cursor > 0.5:
+        KEEP.append((_cursor, g0))
+    _cursor = g1
+if TOTAL - _cursor > 0.5:
+    KEEP.append((_cursor, TOTAL))
+
+
+def near_gap(s, pad=1.0):
+    return any(g0 - pad <= s <= g1 + pad for g0, g1 in GAPS)
+
+
 def obox(b, s, u0, u1, v0, v1, z0, z1):
     p, t = at(s)
     n = normal_of(t)
@@ -253,21 +335,24 @@ BASE_HALF = 20.0
 STREET_Z = 0.05
 
 base = Builder()
-strip(base, -2.0, TOTAL + 2.0, -BASE_HALF, BASE_HALF, -1.25, 0.0, step=10.0)
+for _a, _b in KEEP:
+    strip(base, _a - (2.0 if _a <= 0.0 else 0.0), _b + (2.0 if _b >= TOTAL else 0.0),
+          -BASE_HALF, BASE_HALF, -1.25, 0.0, step=10.0)
 base.build("ground_base", MAT_STONE)
 
 street = Builder()
-strip(street, 0.0, TOTAL, -STREET_HALF, STREET_HALF, 0.0, STREET_Z, step=3.5)
-# 两侧条石路缘
-strip(street, 0.0, TOTAL, STREET_HALF - CURB, STREET_HALF, 0.0, 0.2, step=6.0)
-strip(street, 0.0, TOTAL, -STREET_HALF, -STREET_HALF + CURB, 0.0, 0.2, step=6.0)
-# 条石铺装纵缝
-strip(street, 0.0, TOTAL, -0.05, 0.05, STREET_Z, STREET_Z + 0.028, step=8.0)
-# 条石铺装横缝
-s_joint = 3.0
-while s_joint < TOTAL - 1.0:
-    obox(street, s_joint, -6.9, 6.9, -0.045, 0.045, STREET_Z, STREET_Z + 0.028)
-    s_joint += 10.0
+for _a, _b in KEEP:
+    strip(street, _a, _b, -STREET_HALF, STREET_HALF, 0.0, STREET_Z, step=3.5)
+    # 两侧条石路缘
+    strip(street, _a, _b, STREET_HALF - CURB, STREET_HALF, 0.0, 0.2, step=6.0)
+    strip(street, _a, _b, -STREET_HALF, -STREET_HALF + CURB, 0.0, 0.2, step=6.0)
+    # 条石铺装纵缝
+    strip(street, _a, _b, -0.05, 0.05, STREET_Z, STREET_Z + 0.028, step=8.0)
+    # 条石铺装横缝
+    s_joint = max(3.0, math.ceil(_a / 10.0) * 10.0)
+    while s_joint < _b - 1.0:
+        obox(street, s_joint, -6.9, 6.9, -0.045, 0.045, STREET_Z, STREET_Z + 0.028)
+        s_joint += 10.0
 street.build("street_pave", MAT_STONE)
 
 
@@ -399,27 +484,35 @@ def building(s_mid, side, w, depth, storeys, idx):
     return s_mid - w / 2, s_mid + w / 2
 
 
-# 连续街墙：每侧 8 栋，巷口仅 1.2~1.8 m
+# 连续街墙：跳过路口后分段排布（约 23.6m 一栋，与原密度一致）
 SPANS = {1: [], -1: []}
+SEG_SPANS = []  # [(s_start, s_end, {1: [...], -1: [...]}), ...]
 HOUSE_ID = 0
-DETAIL = {1: 0, -1: 0}
-for side in (1, -1):
-    n_h = 8
-    s_start, s_end = 16.0, TOTAL - 16.0
-    gaps = [RNG.uniform(1.2, 1.8) for _ in range(n_h - 1)]
-    weights = [RNG.uniform(0.9, 1.1) for _ in range(n_h)]
-    remain = (s_end - s_start) - sum(gaps)
-    scale = remain / sum(weights)
-    widths = [wt * scale for wt in weights]
-    cursor = s_start
-    for i in range(n_h):
-        w = widths[i]
-        depth = RNG.uniform(9.0, 11.5)
-        storeys = 3 if i in (3, 6) else 2
-        a, b = building(cursor + w / 2, side, w, depth, storeys, HOUSE_ID)
-        SPANS[side].append((a, b))
-        HOUSE_ID += 1
-        cursor = b + (gaps[i] if i < n_h - 1 else 0.0)
+HOUSE_PITCH = 23.6
+for _a, _b in KEEP:
+    s_start = 16.0 if _a <= 0.0 else _a + 1.0
+    s_end = TOTAL - 16.0 if _b >= TOTAL else _b - 1.0
+    if s_end - s_start < 9.0:
+        continue
+    n_h = max(2, int(round((s_end - s_start) / HOUSE_PITCH)))
+    seg = {1: [], -1: []}
+    for side in (1, -1):
+        gaps = [RNG.uniform(1.2, 1.8) for _ in range(n_h - 1)]
+        weights = [RNG.uniform(0.9, 1.1) for _ in range(n_h)]
+        remain = (s_end - s_start) - sum(gaps)
+        scale = remain / sum(weights)
+        widths = [wt * scale for wt in weights]
+        cursor = s_start
+        for i in range(n_h):
+            w = widths[i]
+            depth = RNG.uniform(9.0, 11.5)
+            storeys = 3 if i in (3, 6) else 2
+            a, b = building(cursor + w / 2, side, w, depth, storeys, HOUSE_ID)
+            seg[side].append((a, b))
+            SPANS[side].append((a, b))
+            HOUSE_ID += 1
+            cursor = b + (gaps[i] if i < n_h - 1 else 0.0)
+    SEG_SPANS.append((s_start, s_end, seg))
 
 
 # ---------------------------------------------------------------- 巷口 / 院墙 / 门楼
@@ -476,16 +569,17 @@ for side in (1, -1):
     court_wall(spans[-1][1], TOTAL - 6.0, side)
     gatehouse((6.0 + spans[0][0]) / 2, side)
 
-# 巷口木门（退进 2.4 m，增强街墙连续感）
+# 巷口木门（退进 2.4 m，增强街墙连续感）；只在同一路段内补，路口处敞开
 for side in (1, -1):
-    spans = sorted(SPANS[side])
-    for a, b in zip(spans, spans[1:]):
-        gap = b[0] - a[1]
-        if gap > 0.8:
-            wg = Builder()
-            obox(wg, (a[1] + b[0]) / 2, side * (FRONT + 2.2), side * (FRONT + 2.32),
-                 -gap / 2, gap / 2, 0.0, 2.5)
-            wg.build("alley_gate", MAT_WOOD)
+    for _, _, seg in SEG_SPANS:
+        spans = sorted(seg[side])
+        for a, b in zip(spans, spans[1:]):
+            gap = b[0] - a[1]
+            if gap > 0.8:
+                wg = Builder()
+                obox(wg, (a[1] + b[0]) / 2, side * (FRONT + 2.2), side * (FRONT + 2.32),
+                     -gap / 2, gap / 2, 0.0, 2.5)
+                wg.build("alley_gate", MAT_WOOD)
 
 
 # ---------------------------------------------------------------- 牌坊
@@ -574,6 +668,8 @@ while s < TOTAL - 4.0:
 TREE_COUNT = 0
 for k, ts in enumerate(TREE_STATIONS):
     side = 1 if k % 2 == 0 else -1
+    if near_gap(ts):
+        continue
     if any(abs(ts - ps) < 6.5 for ps in PAIFANG_S):
         continue
     if any(abs(ts - p) < 4.0 for p in PLANTER_S):
@@ -584,6 +680,8 @@ for k, ts in enumerate(TREE_STATIONS):
 
 # 街心树池 / 花坛
 for ps in PLANTER_S:
+    if near_gap(ps):
+        continue
     x, y = world(ps, 0.0)
     b = Builder()
     b.box(x - 1.35, x + 1.35, y - 1.35, y - 1.05, 0.05, 0.45)
@@ -596,6 +694,8 @@ for ps in PLANTER_S:
     TREE_COUNT += 1
 
 for i, s in enumerate((30.5, 64.9, 99.3, 133.7, 168.1, 193.9)):
+    if near_gap(s):
+        continue
     if any(abs(s - ps) < 4.0 for ps in PAIFANG_S):
         continue
     if any(abs(s - ts) < 2.6 for ts in TREE_STATIONS):

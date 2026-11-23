@@ -66,6 +66,8 @@ const NO_PAD_IDS = new Set(['panmen']);
 const PAD_TOP: Record<string, number> = {
   // 山塘街石台压到河面（-1.3m）以下，模型内河与山塘河才能连成一条水
   shantangjie: -1.34,
+  // 石路底板已切出上塘河并下探到水面以下，石台同样压到河面以下，否则会重新盖住河道
+  shilu: -1.34,
 };
 
 const OUTSIDE_IDS = new Set(DETAILED_MODELS.filter((model) => model.outside).map((model) => model.id));

@@ -296,8 +296,9 @@ export const HERITAGE_LANDMARKS: HeritageLandmark[] = [
     type: 'monument',
     level: 'provincial',
     kind: 'mansion',
-    lon: 120.63035,
-    lat: 31.31293,
+    // OSM 的 POI 落在平江路上（偏北约 250m）；这里用状元博物馆实测坐标（钮家巷 3 号）
+    lon: 120.63072,
+    lat: 31.31064,
     description: '钮家巷内的清代状元潘世恩故居，多进宅院。',
   },
   {

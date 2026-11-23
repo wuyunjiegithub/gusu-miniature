@@ -52,8 +52,9 @@ export function buildWallGeometry(
 
     // 内墙面
     quad(ix, baseY, iz, jx, baseY, jz, jx, topY, jz, ix, topY, iz);
-    // 外墙面
-    quad(ox, baseY, oz, px, baseY, pz, px, topY, pz, ox, topY, oz);
+    // 外墙面：必须反向绕序，否则法线指向墙内，从城外看整面墙被背面剔除，
+    // 只剩墙顶和垛口悬在水面上（盘门正面"悬空"就是这个原因）
+    quad(px, baseY, pz, ox, baseY, oz, ox, topY, oz, px, topY, pz);
     // 墙顶
     quad(ix, topY, iz, jx, topY, jz, px, topY, pz, ox, topY, oz);
   }

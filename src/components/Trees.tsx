@@ -10,6 +10,9 @@ import { pointInRing, lonLatToVector3 } from '../utils/geo';
 import { WORLD_LIMIT } from '../constants/geo';
 import { HILLS } from '../data/hills';
 import { buildOuterCity } from '../data/outerCity';
+import { OUTER_PARKS, type OuterPark } from '../data/outerParks';
+import modelBounds from '../data/model-bounds.json';
+import { inWater } from '../utils/waterField';
 import type { LocalPoint2 } from '../types';
 
 const TRUNK_COLORS = ['#6b5642', '#5f4c3b', '#75604a'];
@@ -21,13 +24,13 @@ const MAX_STREET_TREES = 9000;
 /** 城外行道树上限 */
 const MAX_OUTER_TREES = 5200;
 /** 城外空地散生林（绿化带）上限 */
-const MAX_SCATTER_TREES = 8000;
+const MAX_SCATTER_TREES = 12000;
 /**
  * 城外空地散生林：3–5.8km 的城郊此前只剩屋顶与马路，大片空地是裸地。
- * 这里按 68m 网格撒点补绿化带，避开道路、河湖、山体、园林与民居，
+ * 这里按 58m 网格撒点补绿化带，避开道路、河湖、山体、园林与民居，
  * 成组出现（一格 1–2 棵）更像林地而不是行道树。
  */
-const SCATTER_STEP = 68;
+const SCATTER_STEP = 58;
 
 function scatterOuterWoods(roadIndex: RoadIndex, grids: (FootprintGrid | null)[]): TreeTransform[] {
   const trees: TreeTransform[] = [];
@@ -40,8 +43,8 @@ function scatterOuterWoods(roadIndex: RoadIndex, grids: (FootprintGrid | null)[]
       const x = gx + (hash(seed) - 0.5) * SCATTER_STEP * 0.85;
       const z = gz + (hash(seed + 17) - 0.5) * SCATTER_STEP * 0.85;
       const r = Math.hypot(x, z);
-      if (r < 2600 || r > WORLD_LIMIT - 70) continue;
-      if (hash(seed + 3) > 0.34) continue;
+      if (r < 2400 || r > WORLD_LIMIT - 70) continue;
+      if (hash(seed + 3) > 0.44) continue;
       if (pointInRing(sceneGeometry.cityOutline, x, z)) continue;
       if (distanceToSegments(WALL_SEGMENTS, x, z) < MOAT_OUTER + 8) continue;
       if (distanceToSegments(OUTER_WATER_SEGMENTS, x, z) < 26) continue;
@@ -69,6 +72,47 @@ function scatterOuterWoods(roadIndex: RoadIndex, grids: (FootprintGrid | null)[]
   return trees;
 }
 
+/**
+ * 城外草地公园：草坪位置见 data/outerParks，城内民居已在 buildOuterCity 里让开。
+ * 每处点缀 2–3 丛乔木，草坪颜色按季节取 look.lawn（冬季覆雪），
+ * 乔木复用行道树的干/冠/枯枝实例；落在路面或残留民居上的树照常剔除。
+ */
+function scatterOuterParks(
+  roadIndex: RoadIndex,
+  grids: (FootprintGrid | null)[],
+): { parks: OuterPark[]; trees: TreeTransform[] } {
+  const trees: TreeTransform[] = [];
+  let seed = 570000;
+
+  for (const park of OUTER_PARKS) {
+    seed += 1;
+    // 2–3 丛乔木，每丛 4–6 棵，散布在草坪内侧
+    const groves = 2 + Math.floor(hash(seed + 23) * 2);
+    for (let g = 0; g < groves; g += 1) {
+      const ga = hash(seed + 29 + g * 7) * Math.PI * 2;
+      const gd = 0.12 + hash(seed + 31 + g * 7) * 0.5;
+      const cx = park.x + Math.cos(ga) * park.rx * gd;
+      const cz = park.z + Math.sin(ga) * park.rz * gd;
+      const n = 4 + Math.floor(hash(seed + 37 + g * 7) * 3);
+      for (let t = 0; t < n; t += 1) {
+        const ta = hash(seed + 41 + g * 11 + t * 3) * Math.PI * 2;
+        const td = 6 + hash(seed + 43 + g * 11 + t * 3) * 22;
+        const tx = cx + Math.cos(ta) * td;
+        const tz = cz + Math.sin(ta) * td;
+        if (onAnyRoad(tx, tz, roadIndex, 2) || anyBlocked(grids, tx, tz, 3)) continue;
+        trees.push({
+          x: tx,
+          z: tz,
+          y: OUTER_TREE_Y,
+          trunkH: 6 + hash(seed + 47 + t) * 3,
+          crownR: 3.9 + hash(seed + 53 + t) * 2,
+          lean: (hash(seed + 59 + t) - 0.5) * 0.1,
+        });
+      }
+    }
+  }
+  return { parks: OUTER_PARKS, trees };
+}
 
 /** 建筑占位网格边长，用于快速判断树点是否落在房子里 */
 const GRID_CELL = 24;
@@ -362,6 +406,20 @@ const LANDMARK_RINGS: LandmarkRing[] = Object.values(sceneGeometry.landmarks).fl
   return [{ ring, minX, maxX, minZ, maxZ }];
 });
 
+/**
+ * 精细模型占地矩形（model-bounds.json）：街景型景点（平江路、观前街）
+ * 没有 OSM 轮廓，outline 为空，只能靠模型包围盒剔除叠进模型的程序化树。
+ * pad 为外扩余量：模型边缘的树即使树干在界外，树冠也会盖到模型上。
+ */
+const MODEL_RECTS = Object.values(modelBounds) as [number, number, number, number][];
+
+function insideModel(x: number, z: number, pad = 0): boolean {
+  for (const [minX, maxX, minZ, maxZ] of MODEL_RECTS) {
+    if (x > minX - pad && x < maxX + pad && z > minZ - pad && z < maxZ + pad) return true;
+  }
+  return false;
+}
+
 /** 树点是否落在任一景点轮廓内（pad > 0 时为轮廓外扩的余量，避免树冠探进园内） */
 function insideLandmark(x: number, z: number, pad = 0): boolean {
   if (ringHit(x, z)) return true;
@@ -583,32 +641,38 @@ export function Trees() {
   const trunkRef = useRef<THREE.InstancedMesh>(null);
   const crownRef = useRef<THREE.InstancedMesh>(null);
   const branchRef = useRef<THREE.InstancedMesh>(null);
+  const lawnRef = useRef<THREE.InstancedMesh>(null);
   const season = useSandTable((state) => state.season);
   const look = SEASON_LOOKS[season];
   const buildings = useBuildings();
   const roads = useRoads();
 
-  const trees = useMemo(() => {
+  const { trees, parks } = useMemo(() => {
     const roadIndex = roads ? buildRoadIndex(roads) : null;
     const grid = buildings ? buildFootprintGrid(buildings) : null;
     const blockGrid = roads ? buildOuterBlockGrid(roads) : null;
     const grids = [grid, blockGrid];
-    // 四类树统一用带真实半宽的路面索引避让：树干只在路两侧，不在路面上。
+    // 五类树统一用带真实半宽的路面索引避让：树干只在路两侧，不在路面上。
     const waterside = roadIndex ? alongWaterways(roadIndex) : [];
     const streets = roads && grid && roadIndex ? alongStreets(roads, grid, roadIndex) : [];
     const outer = roads && roadIndex ? alongOuterRoads(roads, grids, roadIndex) : [];
     const woods = roadIndex ? scatterOuterWoods(roadIndex, grids) : [];
-    const all = [...waterside, ...streets, ...outer, ...woods];
-    return all.filter((t) => {
-      // 兜底：任何生成函数漏掉的护城河水面树一律剔除。
-      // 护城河是城墙线外 4.6~124.6m 的环带（再加 3.2m 驳岸），
-      // 城外(cityOutline 之外)且离城墙线在 MOAT_OUTER+4 以内即落在河面里。
-      if (t.y <= -0.5 && !pointInRing(sceneGeometry.cityOutline, t.x, t.z)
-        && distanceToSegments(WALL_SEGMENTS, t.x, t.z) < MOAT_OUTER + 4) return false;
-      // 兜底：任何树都不得压在车行道路面上（含树干半径缓冲）
-      if (roadIndex && onAnyRoad(t.x, t.z, roadIndex, 1.2)) return false;
-      return true;
-    });
+    const park: { parks: OuterPark[]; trees: TreeTransform[] } = roadIndex
+      ? scatterOuterParks(roadIndex, grids)
+      : { parks: [], trees: [] };
+    const all = [...waterside, ...streets, ...outer, ...woods, ...park.trees];
+    return {
+      parks: park.parks,
+      trees: all.filter((t) => {
+        // 统一按实际水域场剔除，并用树冠半径留边，避免树干在岸上但树冠伸进护城河。
+        if (inWater(t.x, t.z, Math.min(8, t.crownR + 1))) return false;
+        // 兜底：任何树都不得压在车行道路面上（含树干半径缓冲）
+        if (roadIndex && onAnyRoad(t.x, t.z, roadIndex, 1.2)) return false;
+        // 精细模型内部已有自带的树/铺地；按树冠半径外扩，避免树冠从边缘探进模型
+        if (insideModel(t.x, t.z, t.crownR)) return false;
+        return true;
+      }),
+    };
   }, [buildings, roads]);
 
   // QA 探针：把最终树位暴露给 window，便于客观校验「树上路/树进水」为零。
@@ -616,7 +680,7 @@ export function Trees() {
   useLayoutEffect(() => {
     if (import.meta.env.DEV) {
       (window as unknown as Record<string, unknown>).__treePositions = trees.map((t) => ({
-        x: t.x, z: t.z, y: t.y,
+        x: t.x, z: t.z, y: t.y, crownR: t.crownR,
       }));
     }
   }, [trees]);
@@ -632,6 +696,8 @@ export function Trees() {
   );
   const crownGeo = useMemo(() => new THREE.IcosahedronGeometry(1, 0), []);
   const branchGeo = useMemo(createBranchGeometry, []);
+  /** 城外公园草坪：单位圆面片，按公园椭圆半径做非等比缩放 */
+  const lawnGeo = useMemo(() => new THREE.CircleGeometry(1, 28).rotateX(-Math.PI / 2), []);
   const [trunkMat, crownMat, branchMat] = useMemo(
     () => [
       new THREE.MeshStandardMaterial({ roughness: 1 }),
@@ -640,6 +706,30 @@ export function Trees() {
     ],
     [],
   );
+  /**
+   * 草坪材质必须保持同一实例：instancedMesh 的 args 一旦变化就会被重建，
+   * 新实例矩阵全为零，而铺矩阵的 effect 只依赖 parks 不会重跑，草坪会整片消失。
+   * 因此材质只建一次，季节换色改在 effect 里设置 color。
+   */
+  const lawnMat = useMemo(() => new THREE.MeshStandardMaterial({ roughness: 1 }), []);
+
+  useLayoutEffect(() => {
+    lawnMat.color.set(season === 'winter' ? '#c6d0d4' : look.lawn);
+  }, [lawnMat, season, look]);
+
+  useLayoutEffect(() => {
+    const lawn = lawnRef.current;
+    if (!lawn) return;
+    const dummy = new THREE.Object3D();
+    parks.forEach((park, i) => {
+      dummy.position.set(park.x, OUTER_TREE_Y + 0.12, park.z);
+      dummy.rotation.set(0, park.rot, 0);
+      dummy.scale.set(park.rx, 1, park.rz);
+      dummy.updateMatrix();
+      lawn.setMatrixAt(i, dummy.matrix);
+    });
+    lawn.instanceMatrix.needsUpdate = true;
+  }, [parks]);
 
   useLayoutEffect(() => {
     const dummy = new THREE.Object3D();
@@ -706,6 +796,13 @@ export function Trees() {
 
   return (
     <group>
+      {parks.length > 0 && (
+        <instancedMesh
+          ref={lawnRef}
+          args={[lawnGeo, lawnMat, parks.length]}
+          frustumCulled={false}
+        />
+      )}
       <instancedMesh
         ref={trunkRef}
         args={[trunkGeo, trunkMat, trees.length]}

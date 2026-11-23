@@ -33,8 +33,8 @@ const sites = HERITAGE_LANDMARKS.map((item) => {
 const footprints = resolveFootprints(sites, roads, toBlocked(modelBounds as Record<string, number[]>), {
   buffer: 2,
   gap: 3,
-  minRadius: 6,
   maxShift: 40,
+  waterways: sceneGeometry.waterways,
 });
 
 const out: Record<string, { x: number; z: number; r: number; hidden?: true }> = {};

@@ -6,7 +6,8 @@ glTF export_yup=True 后 +Z→+Y、+Y→-Z，与网页场景一致。
 
 布局：南北向石路步行街（stone 铺装）贯穿地块，两侧为 3–6 层白墙黛瓦商业
 体块，街口设石牌坊；街区后侧点缀三栋 35–48 m 的现代玻璃塔楼形成天际线，
-沿街少量灯笼、店招与行道树。地形底板按 outline 拉伸，底面 z = -0.25，
+沿街少量灯笼、店招与行道树。地形底板按 outline 拉伸并下探到水面以下，
+沿上塘河切出通航带、两岸铺装重拼，河道交给场景真实水面，桥上铺街。
 建筑落在 z = 0 以上的铺装上。
 """
 
@@ -130,7 +131,8 @@ class Builder:
                   (tx, ym + w1, zt + h1), (tx, ym - w1, zt + h1))
 
     def build(self, name, material, rot=0.0, pivot=(0.0, 0.0), pos=None):
-        """按材质合并；rot 绕 pivot 旋转，pos 为整体平移（局部坐标构件摆放）。"""
+        """按材质合并；rot 绕 pivot 旋转，pos 为整体平移（局部坐标构件摆放）。
+        顶点落盘前统一乘 SCALE：模型整体水平等比缩小，竖向标高保持不变。"""
         entry = MERGED.setdefault(material.name, [material, [], []])
         offset = len(entry[1])
         ox, oy = pos if pos else (0.0, 0.0)
@@ -140,9 +142,15 @@ class Builder:
             verts = []
             for x, y, z in self.verts:
                 dx, dy = x - px, y - py
-                verts.append((ox + px + dx * c - dy * s, oy + py + dx * s + dy * c, z))
+                verts.append(
+                    (
+                        SCALE * (ox + px + dx * c - dy * s),
+                        SCALE * (oy + py + dx * s + dy * c),
+                        z,
+                    )
+                )
         else:
-            verts = [(x + ox, y + oy, z) for x, y, z in self.verts]
+            verts = [(SCALE * (x + ox), SCALE * (y + oy), z) for x, y, z in self.verts]
         entry[1].extend(verts)
         entry[2].extend(tuple(i + offset for i in face) for face in self.faces)
         return None
@@ -208,20 +216,111 @@ def reserve(cx, cy, hw, hd):
     BLOCKS.append((cx, cy, hw, hd))
 
 
+# ---------------------------------------------------------------- 河道通航带
+# 上塘河从外城河分出后斜穿地块西北角，原先整块底板压在水面上。
+# 沿河道切出 RIVER_EDGE*2 宽的通航带：底板与铺装按两岸重拼，河上架上桥，
+# 河面交给 WaterSystem 的真实水面（SHANTANG_Y），模型不再遮挡。
+RIVER_HALF = 13.0                  # 与 SHANGTANG_HALF 一致
+RIVER_CLEAR = 1.2                  # 岸线退让
+RIVER_EDGE = RIVER_HALF + RIVER_CLEAR
+BASE_BOTTOM = -2.6                 # 底板下探到水面（世界 -1.3）以下，河岸不露空腔
+
+# 模型整体水平等比缩放：底板与街块一起缩到 0.92，南/东边缘不再压住沿边马路
+# （实测与最近支路净距 11m、主干道 1.6m）。竖向不缩：底板下探深度、桥面与街面
+# 标高都保持真实值，河岸不会露出空腔。切河判定用缩放后的世界坐标，河道仍与
+# 场景真实水面完全对齐，跨河桥也继续盖住通航带。
+SCALE = 0.92
+
+
+def _to_local(line):
+    return [(x - CX, -(z - CZ)) for x, z in line]
+
+
+_RIVER = max(
+    (_to_local(line) for line in geo.get("outerWaterways", [])),
+    key=lambda pts: sum(1 for p in pts if point_in_poly(OUTLINE, *p)),
+    default=None,
+)
+if not _RIVER:
+    raise RuntimeError("[shilu] scene-geometry.json 缺少上塘河")
+RA, RB = _RIVER[0], _RIVER[1]
+_RLEN = math.hypot(RB[0] - RA[0], RB[1] - RA[1])
+RU = ((RB[0] - RA[0]) / _RLEN, (RB[1] - RA[1]) / _RLEN)
+RN = (-RU[1], RU[0])
+
+
+def river_sd(x, y):
+    """到河道中心线的有符号距离（世界坐标）。"""
+    return (x - RA[0]) * RN[0] + (y - RA[1]) * RN[1]
+
+
+def river_s(x, y):
+    """沿河道方向的投影，0 为河道起点（外城河侧，世界坐标）。"""
+    return (x - RA[0]) * RU[0] + (y - RA[1]) * RU[1]
+
+
+def river_sd_local(x, y):
+    """模型局部（导出前未缩放）坐标 → 世界坐标后再求河道距离。"""
+    return river_sd(x * SCALE, y * SCALE)
+
+
+def river_s_local(x, y):
+    return river_s(x * SCALE, y * SCALE)
+
+
+def clip_keep(poly, f):
+    """Sutherland–Hodgman：保留 f(x, y) >= 0 的一侧。"""
+    out = []
+    n = len(poly)
+    for i in range(n):
+        ax, ay = poly[i]
+        bx, by = poly[(i + 1) % n]
+        fa, fb = f(ax, ay), f(bx, by)
+        if fa >= 0:
+            out.append((ax, ay))
+        if (fa >= 0) != (fb >= 0):
+            t = fa / (fa - fb)
+            out.append((ax + (bx - ax) * t, ay + (by - ay) * t))
+    return out
+
+
+def bank_pieces(poly):
+    """多边形沿河道切成两岸，另保留河道起点以东的小块陆地。"""
+    head = clip_keep(poly, lambda x, y: -river_s_local(x, y))
+    head = clip_keep(head, lambda x, y: RIVER_EDGE - river_sd_local(x, y))
+    head = clip_keep(head, lambda x, y: RIVER_EDGE + river_sd_local(x, y))
+    main = clip_keep(poly, lambda x, y: river_sd_local(x, y) - RIVER_EDGE)
+    north = clip_keep(poly, lambda x, y: -river_sd_local(x, y) - RIVER_EDGE)
+    return [p for p in (main, north, head) if len(p) >= 3]
+
+
+def hits_river(cx, cy, hw, hd):
+    """轴对齐矩形（半宽 hw/hd）是否压到通航带。"""
+    vals = [river_sd_local(cx + sx * hw, cy + sy * hd) for sx in (-1, 1) for sy in (-1, 1)]
+    return min(vals) < RIVER_EDGE and max(vals) > -RIVER_EDGE
+
+
+def banked_slab(builder, x0, x1, y0, y1, z0, z1):
+    """矩形铺装按河道切开，两岸各自成体。"""
+    for piece in bank_pieces([(x0, y0), (x1, y0), (x1, y1), (x0, y1)]):
+        builder.poly_prism(piece, z0, z1)
+
+
 # ---------------------------------------------------------------- 地形底板与街面
 
 base = Builder()
-base.poly_prism(OUTLINE, -0.25, 0.0)
+for piece in bank_pieces(OUTLINE):
+    base.poly_prism(piece, BASE_BOTTOM, 0.0)
 base.build("shilu_base", MAT_PAVE)
 
 # 步行街主街面
 walk = Builder()
-walk.box(-STREET_HALF, STREET_HALF, Y_SOUTH, Y_NORTH, 0.0, 0.08)
+banked_slab(walk, -STREET_HALF, STREET_HALF, Y_SOUTH, Y_NORTH, 0.0, 0.08)
 walk.build("street_pave", MAT_STONE)
 
 # 中央石材分隔带
 median = Builder()
-median.box(-1.2, 1.2, Y_SOUTH, Y_NORTH, 0.08, 0.11)
+banked_slab(median, -1.2, 1.2, Y_SOUTH, Y_NORTH, 0.08, 0.11)
 median.build("street_median", MAT_STONE)
 
 # 两侧人行道 + 路缘石
@@ -229,9 +328,16 @@ sidewalk = Builder()
 curb = Builder()
 for sx in (-1, 1):
     x0, x1 = sx * STREET_HALF, sx * (STREET_HALF + WALK)
-    sidewalk.box(min(x0, x1), max(x0, x1), Y_SOUTH, Y_NORTH, 0.0, 0.16)
-    curb.box(sx * (STREET_HALF - 0.1), sx * (STREET_HALF + 0.2),
-             Y_SOUTH, Y_NORTH, 0.0, 0.24)
+    banked_slab(sidewalk, min(x0, x1), max(x0, x1), Y_SOUTH, Y_NORTH, 0.0, 0.16)
+    banked_slab(
+        curb,
+        min(sx * (STREET_HALF - 0.1), sx * (STREET_HALF + 0.2)),
+        max(sx * (STREET_HALF - 0.1), sx * (STREET_HALF + 0.2)),
+        Y_SOUTH,
+        Y_NORTH,
+        0.0,
+        0.24,
+    )
 sidewalk.build("street_sidewalk", MAT_STONE)
 curb.build("street_curb", MAT_STONE)
 
@@ -246,12 +352,25 @@ plaza.box(-60.0, 20.0, -236.0, Y_SOUTH, 0.0, 0.06)
 plaza.box(-40.0, 40.0, Y_NORTH, 136.0, 0.0, 0.06)
 plaza.build("street_plaza", MAT_STONE)
 
+# 河道横穿步行街：切开的街面用一座宽桥接起来，桥面与人行道齐平。
+# 桥体随模型缩到 0.92，但通航带是真实宽度、且斜切到西岸 y≈76，
+# 所以源尺寸留到 36~86，缩放后（33~79）仍完整盖住两岸切边。
+bridge = Builder()
+bridge.box(-17.4, 17.4, 36.0, 86.0, 0.0, 0.42)
+for sx in (-1, 1):
+    x = sx * 16.3
+    bridge.box(x - 0.24, x + 0.24, 36.0, 86.0, 0.42, 1.3)
+bridge.build("street_bridge", MAT_STONE)
+
 
 # ---------------------------------------------------------------- 沿街商业体块
 
 
 def shop(cx, cy, w, d, h, rot, storeys, wall_mat, gable=True):
     """局部 x = 面阔，-y = 临街面；rot/pos 把局部坐标摆到世界。"""
+    # street_row/back 均以 rot=±90° 摆放：局部面阔 w 落到世界 y，进深 d 落到世界 x
+    if hits_river(cx, cy, d / 2, w / 2):
+        return
     body = Builder()
     body.box(-w / 2, w / 2, -d / 2, d / 2, 0.12, h)
     body.build("shop_wall", wall_mat, rot=rot, pos=(cx, cy))
@@ -353,7 +472,7 @@ street_row(1, -42.0, 118.0)
 BACK = [
     (-72.0, -150.0, 30.0, 24.0, 16.0, 4),
     (-74.0, 22.0, 28.0, 26.0, 18.0, 5),
-    (-72.0, 100.0, 26.0, 22.0, 14.0, 4),
+    (-72.0, 112.0, 26.0, 22.0, 14.0, 4),
     (-60.0, -212.0, 26.0, 22.0, 12.0, 3),
     (-100.0, -80.0, 30.0, 24.0, 15.0, 4),
     (-106.0, 30.0, 26.0, 22.0, 13.0, 3),
@@ -401,7 +520,7 @@ def tower(cx, cy, w, d, h):
     reserve(cx, cy, w / 2 + 2.0, d / 2 + 2.0)
 
 
-tower(-78.0, 60.0, 26.0, 26.0, 40.0)
+tower(-131.0, 58.0, 26.0, 26.0, 40.0)
 tower(76.0, -112.0, 24.0, 24.0, 36.0)
 tower(-82.0, -184.0, 22.0, 22.0, 44.0)
 
@@ -443,6 +562,8 @@ paifang(0.0, -221.0)
 
 
 def tree(x, y, h, r):
+    if abs(river_sd_local(x, y)) < RIVER_EDGE + r:
+        return
     trunk = Builder()
     trunk.box(x - 0.32, x + 0.32, y - 0.32, y + 0.32, 0.16, h * 0.44)
     trunk.build("tree_trunk", MAT_WOOD)
@@ -456,6 +577,8 @@ def tree(x, y, h, r):
 
 
 def lantern_pole(x, y):
+    if abs(river_sd_local(x, y)) < RIVER_EDGE + 1.0:
+        return
     pole = Builder()
     pole.box(x - 0.14, x + 0.14, y - 0.14, y + 0.14, 0.16, 5.2)
     pole.box(x - 0.9, x + 0.9, y - 0.1, y + 0.1, 4.95, 5.15)

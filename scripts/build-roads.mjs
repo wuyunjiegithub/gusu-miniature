@@ -54,10 +54,21 @@ const WALK = new Set(['footway', 'cycleway', 'path', 'steps', 'corridor', 'const
 /** 城外数据止于约 5.8km（西至寒山寺一带），再远没有城市肌理 */
 const WORLD_LIMIT = 5890;
 
+/**
+ * 沿河样板街：山塘街（阊门—虎丘）在模型里已按真实尺度建了 6m 街 + 8m 河，
+ * 城内量的是 pedestrian、城外这段 OSM 标成 tertiary（归主干道 26m 宽）。
+ * 这条路与模型街中心线重合，26m 路面从街心向北铺 13m，正好把街北 7.7m 外
+ * 8m 宽的整条山塘河盖死——俯视就是“河到马路就断了”。模型已表达街，这里不再铺。
+ */
+const MODELED_STREET_NAMES = new Set(['山塘街']);
+
 const sceneGeo = JSON.parse(
   await readFile(new URL('../src/data/scene-geometry.json', import.meta.url), 'utf8'),
 );
 const HILLS = JSON.parse(await readFile(new URL('../src/data/hills.json', import.meta.url), 'utf8'));
+
+/** 石路商圈轮廓：判定 area=yes 面状步行区是否落在模型地块内 */
+const shiluRing = sceneGeo.landmarks?.shilu?.outline ?? [];
 
 const cityRing = sceneGeo.cityOutline;
 const cityRingClosed = [...cityRing, cityRing[0]];
@@ -311,6 +322,8 @@ const major = [];
 const minor = [];
 let dropped = 0;
 let walkDropped = 0;
+let streetDropped = 0;
+let areaDropped = 0;
 
 for (const way of wayById.values()) {
   const kind = way.tags?.highway;
@@ -322,9 +335,27 @@ for (const way of wayById.values()) {
     dropped += 1;
     continue;
   }
+  /**
+   * 面状步行区（`area=yes`，如石路商圈 350m 见方的步行街轮廓）不是道路
+   * 中心线，按路宽铺成环状路面会横穿地块：石路模型已经盖住这条路，只在
+   * 模型切出的上塘河通航带里露出半截，还额外生成一座多余平桥。
+   * 只剔除落在石路轮廓内的面状路，园内小广场等其它区域的足迹求解不受影响。
+   */
+  const isArea = way.tags?.area === 'yes';
+  if (!isArea && MODELED_STREET_NAMES.has(way.tags?.name) && MAJOR.has(kind)) {
+    streetDropped += 1;
+    continue;
+  }
   const isMajor = MAJOR.has(kind);
   const elev = elevationOf(way);
   const local = way.geometry.map((p) => toLocal(p.lon, p.lat));
+  if (isArea) {
+    const hit = local.filter((p) => pointInRing(shiluRing, p.x, p.z)).length;
+    if (hit >= local.length * 0.6) {
+      areaDropped += 1;
+      continue;
+    }
+  }
   for (const boxed of clipPolyline(local, WORLD_LIMIT)) {
     for (const piece of clipToCircle(boxed, WORLD_LIMIT)) {
       // 容差放到 2~3m 时，一条 26m 宽的路在简化拐点处会横向错开近 2m，
@@ -1970,7 +2001,8 @@ const majorOut = round(majorLines);
 const minorOut = round(minorLines);
 
 console.log(
-  `[道路] 原始 ${wayById.size}，步行道剔除 ${walkDropped}，园路剔除 ${scenicDropped}，` +
+  `[道路] 原始 ${wayById.size}，步行道剔除 ${walkDropped}，面状步行区剔除 ${areaDropped}，园路剔除 ${scenicDropped}，` +
+    `沿河样板街剔除 ${streetDropped}，` +
     `主干 ${majorOut.length} / 支路 ${minorOut.length}，` +
     `补接 ${snappedMajor + snappedMinor} 处，丢弃 ${dropped}`,
 );

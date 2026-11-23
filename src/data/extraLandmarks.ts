@@ -46,8 +46,9 @@ export const EXTRA_LANDMARKS: ExtraLandmark[] = [
       tierHeight: 4.5,
       eaveOverhang: 1.6,
       lean: 0.045,
-      // 虎丘山体峰顶世界高度约 -2 + 88
-      baseY: 85,
+      // 虎丘山体在塔位（山顶台地）的实际地表高度约 74.3m（见 Hills 的峰形计算），
+      // 塔基要落在地表上，底座略沉 0.8m，避免远看悬空。
+      baseY: 73.5,
     },
     padRadius: 0,
   },

@@ -27,10 +27,10 @@ import { Heritage } from './Heritage';
 import { Panmen } from './Panmen';
 import { LandmarkLabels } from './LandmarkLabels';
 import { CameraRig, DebugCamera, PanBounds } from './CameraRig';
-import { TourController } from './TourController';
 import { LodWatcher } from './LodWatcher';
 import { PerfProbe } from './PerfProbe';
 import { CameraPoseSync } from './CameraPoseSync';
+import { TourPreview } from './TourPreview';
 import { useBuildings } from '../hooks/useBuildings';
 import { useRoads } from '../hooks/useRoads';
 
@@ -114,6 +114,7 @@ function BootGate() {
 
 export function Scene() {
   const select = useSandTable((state) => state.select);
+  const previewActive = useSandTable((state) => state.previewActive);
 
   return (
     <Canvas
@@ -127,13 +128,6 @@ export function Scene() {
       shadows="soft"
       // 场景纵深 16km 且路面/水面/底座间距只有 1~2m，用对数深度缓冲避免远近切换时 z-fighting
       gl={{ antialias: true, logarithmicDepthBuffer: true }}
-      // 用户主动拖动/滚轮时中断漫游，把相机交还给手动控制
-      onPointerDown={() => {
-        if (useSandTable.getState().tour.active) useSandTable.getState().exitTour();
-      }}
-      onWheel={() => {
-        if (useSandTable.getState().tour.active) useSandTable.getState().exitTour();
-      }}
       onCreated={({ gl }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = 1.1;
@@ -142,7 +136,9 @@ export function Scene() {
         // onBeforeCompile 着色器出错时会被静默吞掉。
         if (import.meta.env.PROD) gl.debug.checkShaderErrors = false;
       }}
-      onPointerMissed={() => select(null)}
+      onPointerMissed={() => {
+        if (!useSandTable.getState().previewActive) select(null);
+      }}
     >
       <EnvironmentRig />
 
@@ -178,10 +174,10 @@ export function Scene() {
       {shown('landmarks') && <ProceduralLandmarks />}
       {shown('landmarks') && <Heritage />}
       {shown('landmarks') && <Panmen />}
-      <LandmarkLabels />
+      {!previewActive && <LandmarkLabels />}
 
       <CameraRig />
-      <TourController />
+      <TourPreview />
       <PanBounds />
       <LodWatcher />
       <PerfProbe />
