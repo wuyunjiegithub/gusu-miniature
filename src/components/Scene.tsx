@@ -127,7 +127,8 @@ export function Scene() {
       dpr={[1, 1.5]}
       shadows="soft"
       // 场景纵深 16km 且路面/水面/底座间距只有 1~2m，用对数深度缓冲避免远近切换时 z-fighting
-      gl={{ antialias: true, logarithmicDepthBuffer: true }}
+      // 录制导出需要读取 WebGL 帧，保留绘图缓冲
+      gl={{ antialias: true, logarithmicDepthBuffer: true, preserveDrawingBuffer: true }}
       onCreated={({ gl }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = 1.1;

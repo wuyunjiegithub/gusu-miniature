@@ -48,6 +48,19 @@ export function HUD() {
           ))}
         </div>
       </div>
+
+      <button
+        type="button"
+        className="hud-export"
+        title="预览并导出 60 秒 MP4（R）"
+        onClick={() => window.dispatchEvent(new Event('preview:export'))}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <rect x="1" y="3.2" width="9.6" height="9.6" rx="1.4" />
+          <path d="M11.4 7.2 15 4.6v6.8l-3.6-2.6z" />
+        </svg>
+        导出 MP4
+      </button>
     </div>
   );
 }
